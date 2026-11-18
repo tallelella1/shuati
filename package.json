@@ -1,0 +1,12 @@
+{
+  "name": "shuati",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline Markdown exam practice for Obsidian",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "build": "node build.cjs",
+    "verify": "npm test && npm run build"
+  },
+  "devDependencies": { "esbuild": "0.25.5" }
+}

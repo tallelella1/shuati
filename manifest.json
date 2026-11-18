@@ -1,0 +1,9 @@
+{
+  "id": "shuati",
+  "name": "刷题 Shuati",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "从本地 Markdown 导入试卷，离线练习、模考和重刷错题。",
+  "author": "tallelella1",
+  "isDesktopOnly": false
+}
