@@ -46,6 +46,31 @@ test('离开并恢复模考，交卷评分一次，未答题与错题分离，�
   assert.equal(data.progress[question].wrongCount, 1);
 });
 
+test('删除单条未完成记录，保留已提交的错题与收藏，旧页面操作不会恢复记录', () => {
+  const { data, paper, question } = open();
+  const practice = state.startSession(data, { mode: 'practice' }, paper.questionIds);
+  const pending = state.startSession(data, { mode: 'exam' }, paper.questionIds, 1);
+  const completed = state.startSession(data, { mode: 'practice' }, paper.questionIds);
+  state.setSelection(data, practice.id, question, ['B']);
+  state.grade(data, practice.id, question);
+  state.toggleBookmark(data, question);
+  state.submit(data, completed.id);
+  const progress = { ...data.progress[question] };
+
+  state.deleteSession(data, practice.id);
+  state.deleteSession(data, practice.id);
+  state.setSelection(data, practice.id, question, ['A']);
+  state.grade(data, practice.id, question);
+  state.submit(data, practice.id);
+  assert.equal(state.expire(data, practice.id), false);
+  assert.throws(() => state.deleteSession(data, completed.id), /已完成/);
+
+  const saved = JSON.parse(JSON.stringify(data));
+  assert.deepEqual(Object.keys(saved.sessions), [pending.id, completed.id]);
+  assert.deepEqual(saved.papers[paper.id].questionIds, [question]);
+  assert.deepEqual(saved.progress[question], progress);
+});
+
 test('到时后提交已保存答案，不接收过期变更', () => {
   const { data, paper, question } = open();
   const exam = state.startSession(data, { mode: 'exam' }, paper.questionIds, 1, 1000);

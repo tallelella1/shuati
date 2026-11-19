@@ -56,9 +56,16 @@ function startSession(data, scope, questionIds, minutes, now = Date.now()) {
   return session;
 }
 
+function deleteSession(data, sessionId) {
+  const session = data.sessions[sessionId];
+  if (!session) return;
+  if (session.completed !== undefined) throw new Error('该记录已完成作答，无法删除');
+  delete data.sessions[sessionId];
+}
+
 function setSelection(data, sessionId, id, selected, now = Date.now()) {
   const session = data.sessions[sessionId];
-  if (expire(data, sessionId, now) || session.completed || session.results[id] || !session.questionIds.includes(id)) return;
+  if (!session || expire(data, sessionId, now) || session.completed !== undefined || session.results[id] || !session.questionIds.includes(id)) return;
   const question = data.versions[id];
   if ((question.type !== 'multiple' && selected.length > 1) || new Set(selected).size !== selected.length
     || selected.some(key => !question.options.some(option => option.key === key))) throw new Error('选项无效');
@@ -67,14 +74,14 @@ function setSelection(data, sessionId, id, selected, now = Date.now()) {
 
 function grade(data, sessionId, id) {
   const session = data.sessions[sessionId];
-  if (session.completed || session.mode !== 'practice' || session.results[id] || !session.questionIds.includes(id)) return;
+  if (!session || session.completed !== undefined || session.mode !== 'practice' || session.results[id] || !session.questionIds.includes(id)) return;
   const selected = session.selected[id] ?? [];
   if (selected.length) session.results[id] = record(data, id, selected);
 }
 
 function submit(data, sessionId, now = Date.now()) {
   const session = data.sessions[sessionId];
-  if (session.completed) return;
+  if (!session || session.completed !== undefined) return;
   for (const id of session.questionIds) {
     if (!session.results[id]) session.results[id] = session.mode === 'exam' ? record(data, id, session.selected[id] ?? []) : 'unanswered';
   }
@@ -83,7 +90,7 @@ function submit(data, sessionId, now = Date.now()) {
 
 function expire(data, sessionId, now = Date.now()) {
   const session = data.sessions[sessionId];
-  if (session.completed || session.deadline === undefined || now < session.deadline) return false;
+  if (!session || session.completed !== undefined || session.deadline === undefined || now < session.deadline) return false;
   submit(data, sessionId, now);
   return true;
 }
@@ -93,4 +100,4 @@ function toggleBookmark(data, id) {
   data.progress[id] = { ...previous, bookmarked: !previous.bookmarked };
 }
 
-module.exports = { newData, importPaper, pickQuestions, record, startSession, setSelection, grade, submit, expire, toggleBookmark };
+module.exports = { newData, importPaper, pickQuestions, record, startSession, deleteSession, setSelection, grade, submit, expire, toggleBookmark };

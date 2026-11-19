@@ -60,6 +60,7 @@
   margin-block: var(--size-4-2);
 }
 
+.shuati-modal .shuati-grid { max-height: 60vh; overflow-y: auto; }
 .shuati-grid button { border: 1px solid var(--background-modifier-border); }
 .shuati-grid button[aria-current="step"] { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
 .shuati-list { padding-inline-start: 0; list-style: none; }

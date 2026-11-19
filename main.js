@@ -228,22 +228,28 @@ var require_study = __commonJS({
       data.sessions[id] = session;
       return session;
     }
+    function deleteSession(data, sessionId) {
+      const session = data.sessions[sessionId];
+      if (!session) return;
+      if (session.completed !== void 0) throw new Error("\u8BE5\u8BB0\u5F55\u5DF2\u5B8C\u6210\u4F5C\u7B54\uFF0C\u65E0\u6CD5\u5220\u9664");
+      delete data.sessions[sessionId];
+    }
     function setSelection(data, sessionId, id, selected, now = Date.now()) {
       const session = data.sessions[sessionId];
-      if (expire(data, sessionId, now) || session.completed || session.results[id] || !session.questionIds.includes(id)) return;
+      if (!session || expire(data, sessionId, now) || session.completed !== void 0 || session.results[id] || !session.questionIds.includes(id)) return;
       const question = data.versions[id];
       if (question.type !== "multiple" && selected.length > 1 || new Set(selected).size !== selected.length || selected.some((key) => !question.options.some((option) => option.key === key))) throw new Error("\u9009\u9879\u65E0\u6548");
       session.selected[id] = [...selected];
     }
     function grade(data, sessionId, id) {
       const session = data.sessions[sessionId];
-      if (session.completed || session.mode !== "practice" || session.results[id] || !session.questionIds.includes(id)) return;
+      if (!session || session.completed !== void 0 || session.mode !== "practice" || session.results[id] || !session.questionIds.includes(id)) return;
       const selected = session.selected[id] ?? [];
       if (selected.length) session.results[id] = record(data, id, selected);
     }
     function submit(data, sessionId, now = Date.now()) {
       const session = data.sessions[sessionId];
-      if (session.completed) return;
+      if (!session || session.completed !== void 0) return;
       for (const id of session.questionIds) {
         if (!session.results[id]) session.results[id] = session.mode === "exam" ? record(data, id, session.selected[id] ?? []) : "unanswered";
       }
@@ -251,7 +257,7 @@ var require_study = __commonJS({
     }
     function expire(data, sessionId, now = Date.now()) {
       const session = data.sessions[sessionId];
-      if (session.completed || session.deadline === void 0 || now < session.deadline) return false;
+      if (!session || session.completed !== void 0 || session.deadline === void 0 || now < session.deadline) return false;
       submit(data, sessionId, now);
       return true;
     }
@@ -259,7 +265,7 @@ var require_study = __commonJS({
       const previous = data.progress[id] ?? {};
       data.progress[id] = { ...previous, bookmarked: !previous.bookmarked };
     }
-    module2.exports = { newData, importPaper, pickQuestions, record, startSession, setSelection, grade, submit, expire, toggleBookmark };
+    module2.exports = { newData, importPaper, pickQuestions, record, startSession, deleteSession, setSelection, grade, submit, expire, toggleBookmark };
   }
 });
 
@@ -448,8 +454,33 @@ var ShuatiView = class extends ItemView {
       const label = session.mode === "exam" ? "\u6A21\u8003" : "\u7EC3\u4E60";
       const row = node(list, "li");
       const date = new Date(session.started).toLocaleString();
-      button(row, `${session.title} \xB7 ${label} \xB7 ${date}`, () => this.resume(session.id));
+      const description = `${session.title} \xB7 ${label} \xB7 ${date}`;
+      button(row, description, () => this.resume(session.id));
+      if (session.completed === void 0) {
+        const remove = button(row, "\u5220\u9664", () => this.confirmDeleteSession(session, description));
+        remove.setAttribute("aria-label", `\u5220\u9664 ${description}`);
+      }
     }
+  }
+  confirmDeleteSession(session, description) {
+    dialog(this.app, "\u5220\u9664\u7EE7\u7EED\u4F5C\u7B54\u8BB0\u5F55", (root, modal) => {
+      node(root, "p", description);
+      node(root, "p", "\u5220\u9664\u540E\u5C06\u65E0\u6CD5\u7EE7\u7EED\u672C\u6B21\u4F5C\u7B54\u3002\u5DF2\u8BB0\u5165\u7684\u7B54\u9898\u7ED3\u679C\u548C\u6536\u85CF\u4ECD\u4F1A\u4FDD\u7559\u3002");
+      const actions = node(root, "div", void 0, "shuati-actions");
+      button(actions, "\u53D6\u6D88", () => modal.close());
+      const remove = button(actions, "\u786E\u8BA4\u5220\u9664", () => {
+        remove.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update((data) => study.deleteSession(data, session.id));
+            modal.close();
+          } finally {
+            remove.disabled = false;
+          }
+        });
+      });
+      remove.classList.add("mod-warning");
+    });
   }
   configureExam(paper) {
     dialog(this.app, "\u6574\u5377\u6A21\u8003", (root, modal) => {
@@ -481,9 +512,11 @@ var ShuatiView = class extends ItemView {
   resume(id) {
     return this.run(async () => {
       let session = this.plugin.data.sessions[id];
+      if (!session) return;
       if (session.deadline !== void 0 && session.completed === void 0 && Date.now() >= session.deadline) {
         await this.plugin.update((data) => study.expire(data, id));
         session = this.plugin.data.sessions[id];
+        if (!session) return;
       }
       this.sessionId = id;
       this.showCard = session.mode === "exam";
@@ -542,24 +575,41 @@ var ShuatiView = class extends ItemView {
     button(actions, "\u4E0A\u4E00\u9898", () => this.jump(session, session.cursor - 1)).disabled = session.cursor === 0;
     node(actions, "span", `${session.cursor + 1} / ${total}`, "shuati-muted");
     button(actions, "\u4E0B\u4E00\u9898", () => this.jump(session, session.cursor + 1)).disabled = session.cursor === total - 1;
+    if (!done && session.mode === "practice") {
+      button(actions, "\u7B54\u9898\u5361", () => this.openPracticeCard(session.id));
+    }
     if (!done) button(actions, session.mode === "exam" ? "\u4EA4\u5377" : "\u7ED3\u675F\u7EC3\u4E60", () => this.confirmSubmit(session), true);
   }
-  renderCard(root, session) {
+  openPracticeCard(sessionId) {
+    const session = this.plugin.data.sessions[sessionId];
+    if (!session) return;
+    dialog(this.app, "\u7B54\u9898\u5361", (root, modal) => {
+      this.renderCard(root, session, (index) => {
+        modal.close();
+        this.contentEl.scrollTop = 0;
+        return this.jump(session, index);
+      });
+    });
+  }
+  renderCard(root, session, onJump = (index) => this.jump(session, index)) {
     const card = node(root, "div", void 0, "shuati-grid");
     for (const [index, id] of session.questionIds.entries()) {
       const q = this.plugin.data.versions[id];
-      const item = button(card, String(q.number), () => this.jump(session, index));
+      const item = button(card, String(q.number), () => onJump(index));
       const result = session.results[id];
-      const status = result ? RESULT_NAMES[result] : session.selected[id]?.length ? "\u5DF2\u7B54" : "\u672A\u7B54";
+      const selected = Boolean(session.selected[id]?.length);
+      let status = "\u672A\u7B54";
+      if (result) status = RESULT_NAMES[result];
+      else if (selected) status = session.mode === "practice" ? "\u5DF2\u9009\uFF0C\u672A\u63D0\u4EA4" : "\u5DF2\u7B54";
       item.setAttribute("aria-label", `\u7B2C ${q.number} \u9898\uFF0C${status}`);
-      item.dataset.status = result ?? (session.selected[id]?.length ? "selected" : "unanswered");
+      item.dataset.status = result ?? (selected ? "selected" : "unanswered");
       if (index === session.cursor) item.setAttribute("aria-current", "step");
     }
   }
   jump(session, cursor) {
     return this.run(() => this.plugin.update((data) => {
       const current = data.sessions[session.id];
-      if (cursor >= 0 && cursor < current.questionIds.length) current.cursor = cursor;
+      if (current && cursor >= 0 && cursor < current.questionIds.length) current.cursor = cursor;
     }));
   }
   confirmSubmit(session) {
@@ -607,7 +657,7 @@ var ShuatiView = class extends ItemView {
         this.run(update, false).then(() => {
           const current = this.plugin.data.sessions[session.id];
           if (renderId !== this.renderId) return;
-          if (current.completed !== void 0) this.render();
+          if (!current || current.completed !== void 0) this.render();
           else this.refreshSelection(root, current, question, options);
         });
       });

@@ -186,8 +186,34 @@ class ShuatiView extends ItemView {
       const label = session.mode === 'exam' ? '模考' : '练习';
       const row = node(list, 'li');
       const date = new Date(session.started).toLocaleString();
-      button(row, `${session.title} · ${label} · ${date}`, () => this.resume(session.id));
+      const description = `${session.title} · ${label} · ${date}`;
+      button(row, description, () => this.resume(session.id));
+      if (session.completed === undefined) {
+        const remove = button(row, '删除', () => this.confirmDeleteSession(session, description));
+        remove.setAttribute('aria-label', `删除 ${description}`);
+      }
     }
+  }
+
+  confirmDeleteSession(session, description) {
+    dialog(this.app, '删除继续作答记录', (root, modal) => {
+      node(root, 'p', description);
+      node(root, 'p', '删除后将无法继续本次作答。已记入的答题结果和收藏仍会保留。');
+      const actions = node(root, 'div', undefined, 'shuati-actions');
+      button(actions, '取消', () => modal.close());
+      const remove = button(actions, '确认删除', () => {
+        remove.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update(data => study.deleteSession(data, session.id));
+            modal.close();
+          } finally {
+            remove.disabled = false;
+          }
+        });
+      });
+      remove.classList.add('mod-warning');
+    });
   }
 
   configureExam(paper) {
@@ -222,9 +248,11 @@ class ShuatiView extends ItemView {
   resume(id) {
     return this.run(async () => {
       let session = this.plugin.data.sessions[id];
+      if (!session) return;
       if (session.deadline !== undefined && session.completed === undefined && Date.now() >= session.deadline) {
         await this.plugin.update(data => study.expire(data, id));
         session = this.plugin.data.sessions[id];
+        if (!session) return;
       }
       this.sessionId = id;
       this.showCard = session.mode === 'exam';
@@ -277,18 +305,36 @@ class ShuatiView extends ItemView {
     button(actions, '上一题', () => this.jump(session, session.cursor - 1)).disabled = session.cursor === 0;
     node(actions, 'span', `${session.cursor + 1} / ${total}`, 'shuati-muted');
     button(actions, '下一题', () => this.jump(session, session.cursor + 1)).disabled = session.cursor === total - 1;
+    if (!done && session.mode === 'practice') {
+      button(actions, '答题卡', () => this.openPracticeCard(session.id));
+    }
     if (!done) button(actions, session.mode === 'exam' ? '交卷' : '结束练习', () => this.confirmSubmit(session), true);
   }
 
-  renderCard(root, session) {
+  openPracticeCard(sessionId) {
+    const session = this.plugin.data.sessions[sessionId];
+    if (!session) return;
+    dialog(this.app, '答题卡', (root, modal) => {
+      this.renderCard(root, session, index => {
+        modal.close();
+        this.contentEl.scrollTop = 0;
+        return this.jump(session, index);
+      });
+    });
+  }
+
+  renderCard(root, session, onJump = index => this.jump(session, index)) {
     const card = node(root, 'div', undefined, 'shuati-grid');
     for (const [index, id] of session.questionIds.entries()) {
       const q = this.plugin.data.versions[id];
-      const item = button(card, String(q.number), () => this.jump(session, index));
+      const item = button(card, String(q.number), () => onJump(index));
       const result = session.results[id];
-      const status = result ? RESULT_NAMES[result] : session.selected[id]?.length ? '已答' : '未答';
+      const selected = Boolean(session.selected[id]?.length);
+      let status = '未答';
+      if (result) status = RESULT_NAMES[result];
+      else if (selected) status = session.mode === 'practice' ? '已选，未提交' : '已答';
       item.setAttribute('aria-label', `第 ${q.number} 题，${status}`);
-      item.dataset.status = result ?? (session.selected[id]?.length ? 'selected' : 'unanswered');
+      item.dataset.status = result ?? (selected ? 'selected' : 'unanswered');
       if (index === session.cursor) item.setAttribute('aria-current', 'step');
     }
   }
@@ -296,7 +342,7 @@ class ShuatiView extends ItemView {
   jump(session, cursor) {
     return this.run(() => this.plugin.update(data => {
       const current = data.sessions[session.id];
-      if (cursor >= 0 && cursor < current.questionIds.length) current.cursor = cursor;
+      if (current && cursor >= 0 && cursor < current.questionIds.length) current.cursor = cursor;
     }));
   }
 
@@ -348,7 +394,7 @@ class ShuatiView extends ItemView {
         this.run(update, false).then(() => {
           const current = this.plugin.data.sessions[session.id];
           if (renderId !== this.renderId) return;
-          if (current.completed !== undefined) this.render();
+          if (!current || current.completed !== undefined) this.render();
           else this.refreshSelection(root, current, question, options);
         });
       });
