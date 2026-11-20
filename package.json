@@ -1,6 +1,6 @@
 {
   "name": "shuati",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Offline Markdown exam practice for Obsidian",
   "scripts": {

@@ -391,14 +391,75 @@ var require_study = __commonJS({
   }
 });
 
+// src/hotkeys.cjs
+var require_hotkeys = __commonJS({
+  "src/hotkeys.cjs"(exports2, module2) {
+    var DEFAULT_HOTKEYS = Object.freeze({
+      A: "1",
+      B: "2",
+      C: "3",
+      D: "4",
+      E: "",
+      F: "",
+      G: "",
+      H: "",
+      previous: "ArrowLeft",
+      next: "ArrowRight",
+      grade: "Enter"
+    });
+    var MODIFIERS = [["Ctrl", "ctrlKey"], ["Alt", "altKey"], ["Shift", "shiftKey"], ["Meta", "metaKey"]];
+    var NAMED_KEYS = /* @__PURE__ */ new Set(["Enter", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
+    function readHotkeys2(saved) {
+      return Object.fromEntries(Object.entries(DEFAULT_HOTKEYS).map(([action, key]) => [
+        action,
+        typeof saved?.[action] === "string" ? saved[action] : key
+      ]));
+    }
+    function recordKey2(event) {
+      if (event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState?.("AltGraph")) return "";
+      const key = event.key;
+      if (!NAMED_KEYS.has(key) && !/^[a-z0-9]$/i.test(key ?? "")) return "";
+      const modifiers = MODIFIERS.filter(([, field]) => event[field]).map(([name]) => name);
+      return [...modifiers, key.length === 1 ? key.toUpperCase() : key].join("+");
+    }
+    function matchHotkey2(hotkeys, event) {
+      const key = recordKey2(event);
+      return key ? Object.keys(hotkeys).find((action) => hotkeys[action] === key) : void 0;
+    }
+    function actionForOption2(type, key) {
+      if (type === "judge") return key === "T" ? "A" : "B";
+      return key;
+    }
+    function keyLabel2(key) {
+      const arrows = { ArrowLeft: "\u2190", ArrowRight: "\u2192", ArrowUp: "\u2191", ArrowDown: "\u2193" };
+      return key.split("+").map((part) => arrows[part] ?? part).join("+");
+    }
+    module2.exports = { readHotkeys: readHotkeys2, recordKey: recordKey2, matchHotkey: matchHotkey2, actionForOption: actionForOption2, keyLabel: keyLabel2 };
+  }
+});
+
 // src/main.cjs
-var { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile } = require("obsidian");
+var { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile, PluginSettingTab, Setting } = require("obsidian");
 var { parsePaper } = require_parser();
 var { resolvePaperMedia } = require_media();
 var study = require_study();
+var { readHotkeys, recordKey, matchHotkey, actionForOption, keyLabel } = require_hotkeys();
 var VIEW = "shuati-study";
 var TAB_NAMES = { paper: "\u8BD5\u5377", wrong: "\u9519\u9898", bookmarked: "\u6536\u85CF" };
 var TYPE_NAMES = { single: "\u5355\u9009", multiple: "\u591A\u9009", judge: "\u5224\u65AD" };
+var HOTKEY_NAMES = {
+  A: "\u9009\u9879 A / \u5224\u65AD\u6B63\u786E",
+  B: "\u9009\u9879 B / \u5224\u65AD\u9519\u8BEF",
+  C: "\u9009\u9879 C",
+  D: "\u9009\u9879 D",
+  E: "\u9009\u9879 E",
+  F: "\u9009\u9879 F",
+  G: "\u9009\u9879 G",
+  H: "\u9009\u9879 H",
+  previous: "\u4E0A\u4E00\u9898",
+  next: "\u4E0B\u4E00\u9898",
+  grade: "\u63D0\u4EA4\u672C\u9898\uFF08\u7EC3\u4E60\uFF09"
+};
 var RESULT_NAMES = { correct: "\u7B54\u5BF9", wrong: "\u7B54\u9519", unanswered: "\u672A\u7B54" };
 function node(parent, tag, text, className) {
   const element = parent.ownerDocument.createElement(tag);
@@ -462,7 +523,60 @@ var PaperNotePicker = class extends FuzzySuggestModal {
     this.choose(file);
   }
 };
-var ShuatiView = class extends ItemView {
+var ShuatiSettings = class extends PluginSettingTab {
+  constructor(plugin) {
+    super(plugin.app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const root = this.containerEl;
+    root.replaceChildren();
+    const hotkeys = readHotkeys(this.plugin.data.hotkeys);
+    new Setting(root).setName("\u81EA\u5B9A\u4E49\u7B54\u9898\u5FEB\u6377\u952E").setHeading();
+    node(root, "p", "\u70B9\u51FB\u8F93\u5165\u6846\u540E\u6309\u952E\u5F55\u5165\u3002\u652F\u6301\u5B57\u6BCD\u3001\u6570\u5B57\u3001\u65B9\u5411\u952E\u3001Enter \u548C\u4FEE\u9970\u952E\u7EC4\u5408\u3002\u6309 Backspace \u6216 Delete \u6E05\u9664\u7ED1\u5B9A\u3002", "setting-item-description");
+    for (const [action, name] of Object.entries(HOTKEY_NAMES)) {
+      new Setting(root).setName(name).addText((text) => {
+        const input = text.inputEl;
+        text.setPlaceholder("\u672A\u7ED1\u5B9A").setValue(keyLabel(hotkeys[action]));
+        input.readOnly = true;
+        input.setAttribute("aria-label", name);
+        input.addEventListener("keydown", async (event) => {
+          if (event.key === "Tab" || event.key === "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.repeat || event.isComposing || event.keyCode === 229) return;
+          const clear = event.key === "Backspace" || event.key === "Delete";
+          const key = clear ? "" : recordKey(event);
+          if (!clear && !key) return;
+          try {
+            await this.plugin.update((data) => {
+              const current = readHotkeys(data.hotkeys);
+              const conflict = key && Object.keys(current).find((other) => other !== action && current[other] === key);
+              if (conflict) throw new Error(`${keyLabel(key)} \u5DF2\u7ED1\u5B9A\u5230\u300C${HOTKEY_NAMES[conflict]}\u300D`);
+              data.hotkeys = { ...current, [action]: key };
+            });
+            text.setValue(keyLabel(readHotkeys(this.plugin.data.hotkeys)[action]));
+            this.plugin.redrawViews();
+          } catch (error) {
+            new Notice(error.message);
+          }
+        });
+      });
+    }
+    new Setting(root).setName("\u6062\u590D\u9ED8\u8BA4\u5FEB\u6377\u952E").addButton((button2) => button2.setButtonText("\u6062\u590D\u9ED8\u8BA4").onClick(async () => {
+      try {
+        await this.plugin.update((data) => {
+          delete data.hotkeys;
+        });
+        this.display();
+        this.plugin.redrawViews();
+      } catch (error) {
+        new Notice(error.message);
+      }
+    }));
+  }
+};
+var ShuatiView = class _ShuatiView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -487,6 +601,8 @@ var ShuatiView = class extends ItemView {
   }
   async onOpen() {
     this.contentEl.classList.add("shuati-view");
+    this.contentEl.tabIndex = 0;
+    this.registerDomEvent(this.contentEl, "keydown", (event) => this.handleHotkey(event));
     this.registerInterval(window.setInterval(() => this.tick(), 1e3));
     this.render();
   }
@@ -507,7 +623,29 @@ var ShuatiView = class extends ItemView {
       if (redraw) this.plugin.redrawViews();
     });
   }
+  handleHotkey(event) {
+    const target = event.target;
+    const activeView = this.app.workspace.getActiveViewOfType(_ShuatiView);
+    if (event.defaultPrevented || activeView !== this || !target?.closest || target.closest('input:not([type="radio"]):not([type="checkbox"]), textarea, select, [contenteditable], [role="textbox"]')) return;
+    if (Array.from(this.contentEl.ownerDocument.querySelectorAll(".modal-container")).some((modal) => modal.getClientRects().length)) return;
+    if (event.key === "Enter" && target.closest('button, a[href], summary, [role="button"]')) return;
+    const action = matchHotkey(readHotkeys(this.plugin.data.hotkeys), event);
+    if (!action) return;
+    const control = this.contentEl.querySelector(`[data-shuati-hotkey="${action}"]`);
+    if (!control || control.disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    control.click();
+  }
+  bindHotkey(control, action, hintParent = control) {
+    control.dataset.shuatiHotkey = action;
+    const key = readHotkeys(this.plugin.data.hotkeys)[action];
+    if (key) node(hintParent, "kbd", keyLabel(key), "shuati-key");
+    return control;
+  }
   render() {
+    const previousFocus = this.contentEl.ownerDocument.activeElement;
+    const hadFocus = this.contentEl.contains(previousFocus);
     const renderId = ++this.renderId;
     this.clearMarkdown();
     this.markdown = this.addChild(new Component());
@@ -517,6 +655,9 @@ var ShuatiView = class extends ItemView {
     const session = this.plugin.data.sessions[this.sessionId];
     if (session) this.renderSession(container, session, renderId);
     else this.renderHome(container);
+    if (hadFocus && !this.contentEl.contains(this.contentEl.ownerDocument.activeElement)) {
+      this.contentEl.focus({ preventScroll: true });
+    }
   }
   renderHome(root) {
     const data = this.plugin.data;
@@ -837,9 +978,9 @@ var ShuatiView = class extends ItemView {
     const result = session.results[id];
     this.renderQuestion(root, session, question, result, renderId);
     const actions = node(root, "footer", void 0, "shuati-actions shuati-footer");
-    button(actions, "\u4E0A\u4E00\u9898", () => this.jump(session, session.cursor - 1)).disabled = session.cursor === 0;
+    this.bindHotkey(button(actions, "\u4E0A\u4E00\u9898", () => this.jump(session, session.cursor - 1)), "previous").disabled = session.cursor === 0;
     node(actions, "span", `${session.cursor + 1} / ${total}`, "shuati-muted");
-    button(actions, "\u4E0B\u4E00\u9898", () => this.jump(session, session.cursor + 1)).disabled = session.cursor === total - 1;
+    this.bindHotkey(button(actions, "\u4E0B\u4E00\u9898", () => this.jump(session, session.cursor + 1)), "next").disabled = session.cursor === total - 1;
     if (!done && session.mode === "practice") {
       button(actions, "\u7B54\u9898\u5361", () => this.openPracticeCard(session.id));
     }
@@ -911,14 +1052,16 @@ var ShuatiView = class extends ItemView {
       control.value = option.key;
       control.setAttribute("aria-label", option.key);
       control.checked = selected.includes(option.key);
-      control.disabled = Boolean(result);
+      control.disabled = Boolean(result) || session.completed !== void 0;
       if (result && question.answers.includes(option.key)) label.dataset.result = "correct";
       if (result && selected.includes(option.key) && !question.answers.includes(option.key)) label.dataset.result = "wrong";
-      node(label, "span", `${option.key}.`, "shuati-option-key");
+      const optionKey = node(label, "span", `${option.key}.`, "shuati-option-key");
+      if (!control.disabled) this.bindHotkey(control, actionForOption(question.type, option.key), optionKey);
       this.renderMarkdown(label, option.text, question.path, renderId);
       control.addEventListener("change", () => {
         const keys = [...options.querySelectorAll("input:checked")].map((input) => input.value);
         const update = () => this.plugin.update((data) => study.setSelection(data, session.id, question.id, keys));
+        if (session.mode === "practice") this.refreshSelection(root, session, question, options);
         this.run(update, false).then(() => {
           const current = this.plugin.data.sessions[session.id];
           if (renderId !== this.renderId) return;
@@ -935,6 +1078,7 @@ var ShuatiView = class extends ItemView {
     } else if (session.mode === "practice") {
       const grade = button(article, "\u63D0\u4EA4\u672C\u9898", () => this.run(() => this.plugin.update((data) => study.grade(data, session.id, question.id))), true);
       grade.classList.add("shuati-grade");
+      this.bindHotkey(grade, "grade");
       grade.disabled = !selected.length;
     }
   }
@@ -990,6 +1134,7 @@ var ShuatiPlugin = class extends Plugin {
     this.data = saved ?? study.newData();
     this.writes = Promise.resolve();
     this.registerView(VIEW, (leaf) => new ShuatiView(leaf, this));
+    this.addSettingTab(new ShuatiSettings(this));
     this.addRibbonIcon("list-checks", "\u6253\u5F00\u5237\u9898", () => this.openView());
     this.addCommand({ id: "open", name: "\u6253\u5F00\u5237\u9898", callback: () => this.openView() });
     this.addCommand({ id: "import-note", name: "\u5BFC\u5165\u5F53\u524D\u7B14\u8BB0\u4E3A\u8BD5\u5377", callback: () => this.previewImport().catch((error) => new Notice(error.message)) });

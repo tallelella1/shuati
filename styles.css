@@ -31,6 +31,7 @@
 .shuati-feedback, .shuati-score { background: var(--background-secondary); }
 .shuati-options { display: grid; gap: var(--size-4-2); border: 0; padding: 0; margin: var(--size-4-4) 0; min-inline-size: 0; }
 .shuati-options legend { margin-block-end: var(--size-4-2); }
+.shuati-key { margin-inline-start: var(--size-4-2); color: var(--text-muted); font-size: var(--font-ui-smaller); }
 
 .shuati-option {
   display: grid;

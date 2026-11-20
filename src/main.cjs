@@ -1,11 +1,17 @@
-const { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile } = require('obsidian');
+const { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile, PluginSettingTab, Setting } = require('obsidian');
 const { parsePaper } = require('./parser.cjs');
 const { resolvePaperMedia } = require('./media.cjs');
 const study = require('./study.cjs');
+const { readHotkeys, recordKey, matchHotkey, actionForOption, keyLabel } = require('./hotkeys.cjs');
 
 const VIEW = 'shuati-study';
 const TAB_NAMES = { paper: '试卷', wrong: '错题', bookmarked: '收藏' };
 const TYPE_NAMES = { single: '单选', multiple: '多选', judge: '判断' };
+const HOTKEY_NAMES = {
+  A: '选项 A / 判断正确', B: '选项 B / 判断错误', C: '选项 C', D: '选项 D',
+  E: '选项 E', F: '选项 F', G: '选项 G', H: '选项 H',
+  previous: '上一题', next: '下一题', grade: '提交本题（练习）',
+};
 const RESULT_NAMES = { correct: '答对', wrong: '答错', unanswered: '未答' };
 
 function node(parent, tag, text, className) {
@@ -74,6 +80,55 @@ class PaperNotePicker extends FuzzySuggestModal {
   onChooseItem(file) { this.choose(file); }
 }
 
+class ShuatiSettings extends PluginSettingTab {
+  constructor(plugin) {
+    super(plugin.app, plugin);
+    this.plugin = plugin;
+  }
+
+  display() {
+    const root = this.containerEl;
+    root.replaceChildren();
+    const hotkeys = readHotkeys(this.plugin.data.hotkeys);
+    new Setting(root).setName('自定义答题快捷键').setHeading();
+    node(root, 'p', '点击输入框后按键录入。支持字母、数字、方向键、Enter 和修饰键组合。按 Backspace 或 Delete 清除绑定。', 'setting-item-description');
+    for (const [action, name] of Object.entries(HOTKEY_NAMES)) {
+      new Setting(root).setName(name).addText(text => {
+        const input = text.inputEl;
+        text.setPlaceholder('未绑定').setValue(keyLabel(hotkeys[action]));
+        input.readOnly = true;
+        input.setAttribute('aria-label', name);
+        input.addEventListener('keydown', async event => {
+          if (event.key === 'Tab' || event.key === 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.repeat || event.isComposing || event.keyCode === 229) return;
+          const clear = event.key === 'Backspace' || event.key === 'Delete';
+          const key = clear ? '' : recordKey(event);
+          if (!clear && !key) return;
+          try {
+            await this.plugin.update(data => {
+              const current = readHotkeys(data.hotkeys);
+              const conflict = key && Object.keys(current).find(other => other !== action && current[other] === key);
+              if (conflict) throw new Error(`${keyLabel(key)} 已绑定到「${HOTKEY_NAMES[conflict]}」`);
+              data.hotkeys = { ...current, [action]: key };
+            });
+            text.setValue(keyLabel(readHotkeys(this.plugin.data.hotkeys)[action]));
+            this.plugin.redrawViews();
+          } catch (error) { new Notice(error.message); }
+        });
+      });
+    }
+    new Setting(root).setName('恢复默认快捷键').addButton(button => button.setButtonText('恢复默认').onClick(async () => {
+      try {
+        await this.plugin.update(data => { delete data.hotkeys; });
+        this.display();
+        this.plugin.redrawViews();
+      } catch (error) { new Notice(error.message); }
+    }));
+  }
+}
+
 class ShuatiView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -95,6 +150,8 @@ class ShuatiView extends ItemView {
 
   async onOpen() {
     this.contentEl.classList.add('shuati-view');
+    this.contentEl.tabIndex = 0;
+    this.registerDomEvent(this.contentEl, 'keydown', event => this.handleHotkey(event));
     this.registerInterval(window.setInterval(() => this.tick(), 1000));
     this.render();
   }
@@ -119,7 +176,32 @@ class ShuatiView extends ItemView {
     });
   }
 
+  handleHotkey(event) {
+    const target = event.target;
+    const activeView = this.app.workspace.getActiveViewOfType(ShuatiView);
+    if (event.defaultPrevented || activeView !== this || !target?.closest
+      || target.closest('input:not([type="radio"]):not([type="checkbox"]), textarea, select, [contenteditable], [role="textbox"]')) return;
+    if (Array.from(this.contentEl.ownerDocument.querySelectorAll('.modal-container')).some(modal => modal.getClientRects().length)) return;
+    if (event.key === 'Enter' && target.closest('button, a[href], summary, [role="button"]')) return;
+    const action = matchHotkey(readHotkeys(this.plugin.data.hotkeys), event);
+    if (!action) return;
+    const control = this.contentEl.querySelector(`[data-shuati-hotkey="${action}"]`);
+    if (!control || control.disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    control.click();
+  }
+
+  bindHotkey(control, action, hintParent = control) {
+    control.dataset.shuatiHotkey = action;
+    const key = readHotkeys(this.plugin.data.hotkeys)[action];
+    if (key) node(hintParent, 'kbd', keyLabel(key), 'shuati-key');
+    return control;
+  }
+
   render() {
+    const previousFocus = this.contentEl.ownerDocument.activeElement;
+    const hadFocus = this.contentEl.contains(previousFocus);
     const renderId = ++this.renderId;
     this.clearMarkdown();
     this.markdown = this.addChild(new Component());
@@ -129,6 +211,9 @@ class ShuatiView extends ItemView {
     const session = this.plugin.data.sessions[this.sessionId];
     if (session) this.renderSession(container, session, renderId);
     else this.renderHome(container);
+    if (hadFocus && !this.contentEl.contains(this.contentEl.ownerDocument.activeElement)) {
+      this.contentEl.focus({ preventScroll: true });
+    }
   }
 
   renderHome(root) {
@@ -436,9 +521,9 @@ class ShuatiView extends ItemView {
     const result = session.results[id];
     this.renderQuestion(root, session, question, result, renderId);
     const actions = node(root, 'footer', undefined, 'shuati-actions shuati-footer');
-    button(actions, '上一题', () => this.jump(session, session.cursor - 1)).disabled = session.cursor === 0;
+    this.bindHotkey(button(actions, '上一题', () => this.jump(session, session.cursor - 1)), 'previous').disabled = session.cursor === 0;
     node(actions, 'span', `${session.cursor + 1} / ${total}`, 'shuati-muted');
-    button(actions, '下一题', () => this.jump(session, session.cursor + 1)).disabled = session.cursor === total - 1;
+    this.bindHotkey(button(actions, '下一题', () => this.jump(session, session.cursor + 1)), 'next').disabled = session.cursor === total - 1;
     if (!done && session.mode === 'practice') {
       button(actions, '答题卡', () => this.openPracticeCard(session.id));
     }
@@ -516,15 +601,17 @@ class ShuatiView extends ItemView {
       control.value = option.key;
       control.setAttribute('aria-label', option.key);
       control.checked = selected.includes(option.key);
-      control.disabled = Boolean(result);
+      control.disabled = Boolean(result) || session.completed !== undefined;
       if (result && question.answers.includes(option.key)) label.dataset.result = 'correct';
       if (result && selected.includes(option.key) && !question.answers.includes(option.key)) label.dataset.result = 'wrong';
-      node(label, 'span', `${option.key}.`, 'shuati-option-key');
+      const optionKey = node(label, 'span', `${option.key}.`, 'shuati-option-key');
+      if (!control.disabled) this.bindHotkey(control, actionForOption(question.type, option.key), optionKey);
       this.renderMarkdown(label, option.text, question.path, renderId);
       control.addEventListener('change', () => {
         const keys = [...options.querySelectorAll('input:checked')].map(input => input.value);
         const update = () => this.plugin.update(data => study.setSelection(data, session.id, question.id, keys));
-        // Practice selections stay visible until an explicit grade or navigation.
+        // Enable grading before the save finishes. Both actions use the same ordered write queue.
+        if (session.mode === 'practice') this.refreshSelection(root, session, question, options);
         this.run(update, false).then(() => {
           const current = this.plugin.data.sessions[session.id];
           if (renderId !== this.renderId) return;
@@ -541,6 +628,7 @@ class ShuatiView extends ItemView {
     } else if (session.mode === 'practice') {
       const grade = button(article, '提交本题', () => this.run(() => this.plugin.update(data => study.grade(data, session.id, question.id))), true);
       grade.classList.add('shuati-grade');
+      this.bindHotkey(grade, 'grade');
       grade.disabled = !selected.length;
     }
   }
@@ -598,6 +686,7 @@ class ShuatiPlugin extends Plugin {
     this.data = saved ?? study.newData();
     this.writes = Promise.resolve();
     this.registerView(VIEW, leaf => new ShuatiView(leaf, this));
+    this.addSettingTab(new ShuatiSettings(this));
     this.addRibbonIcon('list-checks', '打开刷题', () => this.openView());
     this.addCommand({ id: 'open', name: '打开刷题', callback: () => this.openView() });
     this.addCommand({ id: 'import-note', name: '导入当前笔记为试卷', callback: () => this.previewImport().catch(error => new Notice(error.message)) });
