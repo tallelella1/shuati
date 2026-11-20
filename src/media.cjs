@@ -57,4 +57,19 @@ async function resolvePaperMedia(parsed, origin, resolve) {
   return { ...parsed, questions, issues };
 }
 
-module.exports = { resolvePaperMedia };
+// These embeds have already been resolved to a vault path at import time.
+function mapStoredImages(text, mapPath) {
+  return text.replace(/!\[\[\/([^|\]\n]+)(\|\d+(?:x\d+)?)?\]\]/g,
+    (_, path, size = '') => `![[/${mapPath(path)}${size}]]`);
+}
+
+function mapQuestionImages(question, mapPath) {
+  return {
+    ...question,
+    stem: mapStoredImages(question.stem, mapPath),
+    options: question.options.map(option => ({ ...option, text: mapStoredImages(option.text, mapPath) })),
+    explanation: mapStoredImages(question.explanation, mapPath),
+  };
+}
+
+module.exports = { resolvePaperMedia, mapQuestionImages };

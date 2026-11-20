@@ -171,7 +171,21 @@ var require_media = __commonJS({
       }
       return { ...parsed, questions, issues };
     }
-    module2.exports = { resolvePaperMedia: resolvePaperMedia2 };
+    function mapStoredImages(text, mapPath) {
+      return text.replace(
+        /!\[\[\/([^|\]\n]+)(\|\d+(?:x\d+)?)?\]\]/g,
+        (_, path, size = "") => `![[/${mapPath(path)}${size}]]`
+      );
+    }
+    function mapQuestionImages(question, mapPath) {
+      return {
+        ...question,
+        stem: mapStoredImages(question.stem, mapPath),
+        options: question.options.map((option) => ({ ...option, text: mapStoredImages(option.text, mapPath) })),
+        explanation: mapStoredImages(question.explanation, mapPath)
+      };
+    }
+    module2.exports = { resolvePaperMedia: resolvePaperMedia2, mapQuestionImages };
   }
 });
 
@@ -179,6 +193,7 @@ var require_media = __commonJS({
 var require_study = __commonJS({
   "src/study.cjs"(exports2, module2) {
     var { isCorrect } = require_parser();
+    var { mapQuestionImages } = require_media();
     function newData() {
       return { schema: 1, nextId: 1, papers: {}, versions: {}, progress: {}, sessions: {} };
     }
@@ -197,8 +212,95 @@ var require_study = __commonJS({
         data.versions[questionId] = { ...question, id: questionId, paperId: id, path };
         return questionId;
       });
-      const paper = { id, path, title: parsed.title, questionIds };
+      const paper = { ...existing, id, path, title: existing?.customTitle ?? parsed.title, questionIds };
       data.papers[id] = paper;
+      return paper;
+    }
+    function requirePaper(data, id) {
+      const paper = data.papers[id];
+      if (!paper) throw new Error("\u9898\u5E93\u5DF2\u5220\u9664");
+      return paper;
+    }
+    function renamePaper(data, id, title) {
+      const paper = requirePaper(data, id);
+      const name = title.trim();
+      if (!name) throw new Error("\u9898\u5E93\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A");
+      paper.title = paper.customTitle = name;
+    }
+    function deletePaper(data, id) {
+      if (!data.papers[id]) return false;
+      delete data.papers[id];
+      const removed = /* @__PURE__ */ new Set();
+      for (const question of Object.values(data.versions)) {
+        if (question.paperId !== id) continue;
+        removed.add(question.id);
+        delete data.versions[question.id];
+        delete data.progress[question.id];
+      }
+      for (const session of Object.values(data.sessions)) {
+        const remaining = session.questionIds.filter((questionId) => !removed.has(questionId));
+        if (session.paperId === id || !remaining.length) {
+          delete data.sessions[session.id];
+        } else if (remaining.length !== session.questionIds.length) {
+          const beforeCursor = session.questionIds.slice(0, session.cursor).filter((questionId) => !removed.has(questionId));
+          session.cursor = Math.min(beforeCursor.length, remaining.length - 1);
+          session.questionIds = remaining;
+          for (const store of [session.selected, session.results]) {
+            for (const questionId of Object.keys(store)) if (removed.has(questionId)) delete store[questionId];
+          }
+        }
+      }
+      return true;
+    }
+    var withinPath = (path, root) => path === root || path.startsWith(`${root}/`);
+    function mentionsImagePath(question, root) {
+      const prefix = `![[/${root}`;
+      const matches = (text) => text.includes(`${prefix}]]`) || text.includes(`${prefix}|`) || text.includes(`${prefix}/`);
+      return matches(question.stem) || matches(question.explanation) || question.options.some((option) => matches(option.text));
+    }
+    function usesVaultPath(data, root) {
+      return Object.values(data.papers).some((paper) => withinPath(paper.path, root)) || Object.values(data.versions).some((question) => withinPath(question.path, root) || mentionsImagePath(question, root));
+    }
+    function moveVaultPath(data, oldPath, newPath) {
+      const move = (path) => withinPath(path, oldPath) ? newPath + path.slice(oldPath.length) : path;
+      for (const paper of Object.values(data.papers)) paper.path = move(paper.path);
+      for (const question of Object.values(data.versions)) {
+        question.path = move(question.path);
+        if (mentionsImagePath(question, oldPath)) data.versions[question.id] = mapQuestionImages(question, move);
+      }
+      return true;
+    }
+    function relocationContent(question, imagePaths) {
+      const mapped = mapQuestionImages(question, (path) => {
+        imagePaths.push(path);
+        return path.slice(path.lastIndexOf("/") + 1);
+      });
+      return JSON.stringify([mapped.number, mapped.module, signature(mapped), mapped.explanation]);
+    }
+    function relocatePaper(data, id, path, parsed) {
+      const paper = requirePaper(data, id);
+      if (Object.values(data.papers).some((p) => p.id !== id && p.path === path)) throw new Error("\u8BE5\u7B14\u8BB0\u5DF2\u5BFC\u5165\u4E3A\u53E6\u4E00\u5957\u9898\u5E93");
+      if (parsed.issues.length || !parsed.questions.length) throw new Error("\u8BF7\u5148\u4FEE\u6B63\u65B0\u4F4D\u7F6E\u7684\u8BD5\u5377\u53CA\u56FE\u7247\u5F15\u7528");
+      const mismatch = () => new Error("\u65B0\u4F4D\u7F6E\u7684\u9898\u76EE\u6216\u89E3\u6790\u4E0E\u5DF2\u5BFC\u5165\u7248\u672C\u4E0D\u4E00\u81F4\uFF0C\u8BF7\u9009\u62E9\u540C\u4E00\u4EFD\u8BD5\u5377");
+      if (paper.questionIds.length !== parsed.questions.length) throw mismatch();
+      const moves = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new Map();
+      for (const [index, questionId] of paper.questionIds.entries()) {
+        const before = [], after = [];
+        if (relocationContent(data.versions[questionId], before) !== relocationContent(parsed.questions[index], after)) throw mismatch();
+        for (const [i, from] of before.entries()) {
+          const to = after[i];
+          if (moves.has(from) && moves.get(from) !== to || sources.has(to) && sources.get(to) !== from) {
+            throw new Error("\u56FE\u7247\u5F15\u7528\u5BF9\u5E94\u5173\u7CFB\u4E0D\u4E00\u81F4\uFF0C\u8BF7\u68C0\u67E5\u65B0\u4F4D\u7F6E\u7684\u9644\u4EF6");
+          }
+          moves.set(from, to);
+          sources.set(to, from);
+        }
+      }
+      paper.path = path;
+      for (const question of Object.values(data.versions)) {
+        if (question.paperId !== id) continue;
+        data.versions[question.id] = mapQuestionImages({ ...question, path }, (from) => moves.get(from) ?? from);
+      }
       return paper;
     }
     function pickQuestions(data, { kind, paperId, module: module3, unanswered = false }) {
@@ -222,6 +324,8 @@ var require_study = __commonJS({
     }
     function startSession(data, scope, questionIds, minutes, now = Date.now()) {
       if (!questionIds.length) throw new Error("\u6CA1\u6709\u53EF\u4F5C\u7B54\u7684\u9898\u76EE");
+      if (scope.paperId) requirePaper(data, scope.paperId);
+      if (questionIds.some((id2) => !data.versions[id2])) throw new Error("\u90E8\u5206\u9898\u76EE\u5DF2\u5220\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
       const id = allocate(data, "session");
       const session = { ...scope, id, questionIds: [...questionIds], cursor: 0, selected: {}, results: {}, started: now };
       if (minutes) session.deadline = now + minutes * 6e4;
@@ -262,15 +366,33 @@ var require_study = __commonJS({
       return true;
     }
     function toggleBookmark(data, id) {
+      if (!data.versions[id]) return;
       const previous = data.progress[id] ?? {};
       data.progress[id] = { ...previous, bookmarked: !previous.bookmarked };
     }
-    module2.exports = { newData, importPaper, pickQuestions, record, startSession, deleteSession, setSelection, grade, submit, expire, toggleBookmark };
+    module2.exports = {
+      newData,
+      importPaper,
+      renamePaper,
+      deletePaper,
+      usesVaultPath,
+      moveVaultPath,
+      relocatePaper,
+      pickQuestions,
+      record,
+      startSession,
+      deleteSession,
+      setSelection,
+      grade,
+      submit,
+      expire,
+      toggleBookmark
+    };
   }
 });
 
 // src/main.cjs
-var { ItemView, Plugin, Modal, Notice, Component, MarkdownRenderer, TFile } = require("obsidian");
+var { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile } = require("obsidian");
 var { parsePaper } = require_parser();
 var { resolvePaperMedia } = require_media();
 var study = require_study();
@@ -311,6 +433,31 @@ function dialog(app, title, fill) {
   modal.open();
   return modal;
 }
+function paperLabel(paper) {
+  return `${paper.title}\uFF08${paper.questionIds.length} \u9898\uFF09`;
+}
+function renderImportIssues(root, issues) {
+  const list = node(root, "ul", void 0, "shuati-errors");
+  for (const issue of issues) {
+    node(list, "li", `${issue.number ? `\u7B2C ${issue.number} \u9898 \xB7 ` : ""}\u7B2C ${issue.line} \u884C \xB7 ${issue.message}`);
+  }
+}
+var PaperNotePicker = class extends FuzzySuggestModal {
+  constructor(app, choose) {
+    super(app);
+    this.choose = choose;
+    this.setPlaceholder("\u641C\u7D22\u5E93\u5185 Markdown \u7B14\u8BB0");
+  }
+  getItems() {
+    return this.app.vault.getMarkdownFiles();
+  }
+  getItemText(file) {
+    return file.path;
+  }
+  onChooseItem(file) {
+    this.choose(file);
+  }
+};
 var ShuatiView = class extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -390,7 +537,7 @@ var ShuatiView = class extends ItemView {
     }
     if (!data.papers[this.paperId]) this.paperId = this.tab === "paper" ? papers[0].id : "";
     const filters = node(root, "div", void 0, "shuati-filters");
-    const paperChoices = papers.map((paper2) => [paper2.id, `${paper2.title}\uFF08${paper2.questionIds.length} \u9898\uFF09`]);
+    const paperChoices = papers.map((paper2) => [paper2.id, paperLabel(paper2)]);
     if (this.tab !== "paper") paperChoices.unshift(["", "\u5168\u90E8\u8BD5\u5377"]);
     const paperInput = select(filters, "\u8BD5\u5377", paperChoices, this.paperId);
     paperInput.addEventListener("change", () => {
@@ -424,9 +571,122 @@ var ShuatiView = class extends ItemView {
     const paper = data.papers[this.paperId];
     const title = paper?.title ?? TAB_NAMES[this.tab];
     button(actions, this.tab === "wrong" ? "\u91CD\u5237\u9519\u9898" : "\u5F00\u59CB\u7EC3\u4E60", () => this.start({ ...scope, title, mode: "practice" }, ids), true).disabled = !ids.length;
-    if (this.tab === "paper") button(actions, "\u6574\u5377\u6A21\u8003", () => this.configureExam(paper));
+    if (this.tab === "paper") {
+      button(actions, "\u6574\u5377\u6A21\u8003", () => this.configureExam(paper));
+      button(actions, "\u7BA1\u7406\u9898\u5E93", () => this.choosePaperToManage());
+    }
     if (this.tab !== "paper" && ids.length) this.renderReviewList(root, data, ids);
     this.renderSessions(root, data);
+  }
+  choosePaperToManage() {
+    dialog(this.app, "\u9009\u62E9\u8981\u7BA1\u7406\u7684\u9898\u5E93", (root, modal) => {
+      const list = node(root, "ul", void 0, "shuati-list shuati-paper-list");
+      for (const paper of Object.values(this.plugin.data.papers)) {
+        const row = node(list, "li");
+        const choice = button(row, paperLabel(paper), () => {
+          modal.close();
+          const current = this.plugin.data.papers[paper.id];
+          if (current) this.managePaper(current);
+          else new Notice("\u9898\u5E93\u5DF2\u5220\u9664");
+        });
+        choice.title = paper.path;
+      }
+    });
+  }
+  managePaper(paper) {
+    dialog(this.app, "\u7BA1\u7406\u9898\u5E93", (root, modal) => {
+      node(root, "p", paper.title);
+      const source = this.app.vault.getAbstractFileByPath(paper.path);
+      node(root, "p", `${source ? "\u6E90\u7B14\u8BB0" : "\u672A\u627E\u5230\u6E90\u7B14\u8BB0"} \xB7 ${paper.path}`, "shuati-muted shuati-path");
+      const actions = node(root, "div", void 0, "shuati-actions");
+      const openAction = (action) => () => {
+        modal.close();
+        action();
+      };
+      button(actions, "\u8FD4\u56DE\u9898\u5E93\u9009\u62E9", openAction(() => this.choosePaperToManage()));
+      button(actions, "\u91CD\u547D\u540D", openAction(() => this.renamePaper(paper)));
+      button(actions, "\u91CD\u5B9A\u4F4D\u9898\u5E93", openAction(() => {
+        new PaperNotePicker(this.app, (file) => this.run(() => this.previewRelocation(paper, file), false)).open();
+      }));
+      button(actions, "\u5220\u9664\u9898\u5E93", openAction(() => this.confirmDeletePaper(paper))).classList.add("mod-warning");
+    });
+  }
+  renamePaper(paper) {
+    dialog(this.app, "\u91CD\u547D\u540D\u9898\u5E93", (root, modal) => {
+      const label = node(root, "label", void 0, "shuati-field");
+      node(label, "span", "\u9898\u5E93\u540D\u79F0");
+      const input = node(label, "input", void 0, "shuati-paper-name");
+      input.type = "text";
+      input.value = paper.title;
+      const actions = node(root, "div", void 0, "shuati-actions");
+      button(actions, "\u53D6\u6D88", () => modal.close());
+      const save = button(actions, "\u4FDD\u5B58\u540D\u79F0", () => {
+        save.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update((data) => study.renamePaper(data, paper.id, input.value));
+            modal.close();
+            new Notice("\u9898\u5E93\u5DF2\u91CD\u547D\u540D");
+          } finally {
+            save.disabled = false;
+          }
+        });
+      }, true);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) save.click();
+      });
+    });
+  }
+  confirmDeletePaper(paper) {
+    dialog(this.app, "\u5220\u9664\u9898\u5E93", (root, modal) => {
+      node(root, "p", `${paper.title} \xB7 ${paper.questionIds.length} \u9898`);
+      node(root, "p", "\u5C06\u5220\u9664\u5237\u9898\u63D2\u4EF6\u4E2D\u8FD9\u5957\u9898\u5E93\u7684\u9898\u76EE\u3001\u8FDB\u5EA6\u3001\u9519\u9898\u3001\u6536\u85CF\u548C\u76F8\u5173\u4F5C\u7B54\u3002\u8DE8\u9898\u5E93\u4F5C\u7B54\u4E2D\uFF0C\u4EC5\u79FB\u9664\u8FD9\u5957\u9898\u5E93\u7684\u9898\u76EE\u3002\u6E90\u7B14\u8BB0\u548C\u9644\u4EF6\u4ECD\u4FDD\u5B58\u5728\u5E93\u4E2D\u3002");
+      const actions = node(root, "div", void 0, "shuati-actions");
+      button(actions, "\u53D6\u6D88", () => modal.close());
+      const remove = button(actions, "\u786E\u8BA4\u5220\u9664", () => {
+        remove.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update((data) => study.deletePaper(data, paper.id));
+            modal.close();
+            new Notice("\u9898\u5E93\u5DF2\u5220\u9664");
+          } finally {
+            remove.disabled = false;
+          }
+        });
+      });
+      remove.classList.add("mod-warning");
+    });
+  }
+  async previewRelocation(paper, file) {
+    const path = file.path;
+    const parsed = await this.plugin.readPaper(file, path);
+    dialog(this.app, parsed.issues.length ? "\u68C0\u67E5\u65B0\u4F4D\u7F6E\u7684\u8BD5\u5377" : "\u786E\u8BA4\u91CD\u5B9A\u4F4D\u9898\u5E93", (root, modal) => {
+      node(root, "p", `\u539F\u4F4D\u7F6E \xB7 ${paper.path}`, "shuati-muted shuati-path");
+      node(root, "p", `\u65B0\u4F4D\u7F6E \xB7 ${path}`, "shuati-path");
+      if (parsed.issues.length) {
+        renderImportIssues(root, parsed.issues);
+        return;
+      }
+      node(root, "p", "\u8BF7\u9009\u62E9\u540C\u4E00\u4EFD\u8BD5\u5377\u3002\u91CD\u5B9A\u4F4D\u6210\u529F\u540E\uFF0C\u4F5C\u7B54\u8BB0\u5F55\u3001\u9519\u9898\u548C\u6536\u85CF\u4F1A\u5173\u8054\u5230\u65B0\u4F4D\u7F6E\u3002");
+      const actions = node(root, "div", void 0, "shuati-actions");
+      button(actions, "\u53D6\u6D88", () => modal.close());
+      const save = button(actions, "\u786E\u8BA4\u91CD\u5B9A\u4F4D", () => {
+        save.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update((data) => {
+              if (this.app.vault.getAbstractFileByPath(path) !== file) throw new Error("\u65B0\u4F4D\u7F6E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u7B14\u8BB0");
+              return study.relocatePaper(data, paper.id, path, parsed);
+            });
+            modal.close();
+            new Notice("\u9898\u5E93\u5DF2\u91CD\u5B9A\u4F4D");
+          } finally {
+            save.disabled = false;
+          }
+        });
+      }, true);
+    });
   }
   renderReviewList(root, data, ids) {
     const list = node(root, "ul", void 0, "shuati-list");
@@ -729,16 +989,15 @@ var ShuatiPlugin = class extends Plugin {
     this.addCommand({ id: "open", name: "\u6253\u5F00\u5237\u9898", callback: () => this.openView() });
     this.addCommand({ id: "import-note", name: "\u5BFC\u5165\u5F53\u524D\u7B14\u8BB0\u4E3A\u8BD5\u5377", callback: () => this.previewImport().catch((error) => new Notice(error.message)) });
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      const toPath = (path) => path === oldPath ? file.path : path.startsWith(`${oldPath}/`) ? file.path + path.slice(oldPath.length) : path;
-      if (!Object.values(this.data.papers).some((paper) => toPath(paper.path) !== paper.path)) return;
-      this.update((data) => {
-        for (const paper of Object.values(data.papers)) paper.path = toPath(paper.path);
-        for (const question of Object.values(data.versions)) question.path = toPath(question.path);
-      }).then(() => this.redrawViews()).catch((error) => new Notice(error.message));
+      const newPath = file.path;
+      this.update((data) => study.moveVaultPath(data, oldPath, newPath), (data) => study.usesVaultPath(data, oldPath)).then((changed) => {
+        if (changed) this.redrawViews();
+      }).catch((error) => new Notice(error.message));
     }));
   }
-  update(mutation) {
+  update(mutation, shouldUpdate = () => true) {
     const write = this.writes.then(async () => {
+      if (!shouldUpdate(this.data)) return;
       const next = JSON.parse(JSON.stringify(this.data));
       const result = mutation(next);
       await this.saveData(next);
@@ -761,23 +1020,23 @@ var ShuatiPlugin = class extends Plugin {
     await this.app.workspace.revealLeaf(leaf);
     return leaf.view;
   }
+  async readPaper(file, path) {
+    const read = (note) => this.app.vault.read(note);
+    return resolvePaperMedia(parsePaper(await read(file)), path, async (link, source) => {
+      const target = this.app.metadataCache.getFirstLinkpathDest(link, source);
+      if (!(target instanceof TFile)) return null;
+      return { path: target.path, extension: target.extension.toLowerCase(), content: target.extension === "md" ? await read(target) : void 0 };
+    });
+  }
   async previewImport() {
     const active = this.app.workspace.getActiveFile();
     const recent = active ?? this.app.vault.getAbstractFileByPath(this.app.workspace.getLastOpenFiles()[0] ?? "");
     if (!(recent instanceof TFile) || recent.extension !== "md") throw new Error("\u8BF7\u5148\u6253\u5F00\u8981\u5BFC\u5165\u7684 Markdown \u7B14\u8BB0");
-    const read = (file) => this.app.vault.read(file);
-    const parsed = await resolvePaperMedia(parsePaper(await read(recent)), recent.path, async (link, source) => {
-      const file = this.app.metadataCache.getFirstLinkpathDest(link, source);
-      if (!(file instanceof TFile)) return null;
-      return { path: file.path, extension: file.extension.toLowerCase(), content: file.extension === "md" ? await read(file) : void 0 };
-    });
+    const parsed = await this.readPaper(recent, recent.path);
     dialog(this.app, parsed.issues.length ? "\u8BF7\u4FEE\u6B63\u8BD5\u5377" : "\u5BFC\u5165\u8BD5\u5377", (root, modal) => {
       node(root, "p", recent.path, "shuati-muted");
       if (parsed.issues.length) {
-        const list = node(root, "ul", void 0, "shuati-errors");
-        for (const issue of parsed.issues) {
-          node(list, "li", `${issue.number ? `\u7B2C ${issue.number} \u9898 \xB7 ` : ""}\u7B2C ${issue.line} \u884C \xB7 ${issue.message}`);
-        }
+        renderImportIssues(root, parsed.issues);
         return;
       }
       node(root, "p", `${parsed.title} \xB7 ${parsed.questions.length} \u9898`);

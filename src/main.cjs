@@ -1,4 +1,4 @@
-const { ItemView, Plugin, Modal, Notice, Component, MarkdownRenderer, TFile } = require('obsidian');
+const { ItemView, Plugin, Modal, FuzzySuggestModal, Notice, Component, MarkdownRenderer, TFile } = require('obsidian');
 const { parsePaper } = require('./parser.cjs');
 const { resolvePaperMedia } = require('./media.cjs');
 const study = require('./study.cjs');
@@ -43,6 +43,29 @@ function dialog(app, title, fill) {
   modal.onClose = () => modal.contentEl.replaceChildren();
   modal.open();
   return modal;
+}
+
+function paperLabel(paper) {
+  return `${paper.title}（${paper.questionIds.length} 题）`;
+}
+
+function renderImportIssues(root, issues) {
+  const list = node(root, 'ul', undefined, 'shuati-errors');
+  for (const issue of issues) {
+    node(list, 'li', `${issue.number ? `第 ${issue.number} 题 · ` : ''}第 ${issue.line} 行 · ${issue.message}`);
+  }
+}
+
+class PaperNotePicker extends FuzzySuggestModal {
+  constructor(app, choose) {
+    super(app);
+    this.choose = choose;
+    this.setPlaceholder('搜索库内 Markdown 笔记');
+  }
+
+  getItems() { return this.app.vault.getMarkdownFiles(); }
+  getItemText(file) { return file.path; }
+  onChooseItem(file) { this.choose(file); }
 }
 
 class ShuatiView extends ItemView {
@@ -125,7 +148,7 @@ class ShuatiView extends ItemView {
     }
     if (!data.papers[this.paperId]) this.paperId = this.tab === 'paper' ? papers[0].id : '';
     const filters = node(root, 'div', undefined, 'shuati-filters');
-    const paperChoices = papers.map(paper => [paper.id, `${paper.title}（${paper.questionIds.length} 题）`]);
+    const paperChoices = papers.map(paper => [paper.id, paperLabel(paper)]);
     if (this.tab !== 'paper') paperChoices.unshift(['', '全部试卷']);
     const paperInput = select(filters, '试卷', paperChoices, this.paperId);
     paperInput.addEventListener('change', () => {
@@ -153,9 +176,113 @@ class ShuatiView extends ItemView {
     const paper = data.papers[this.paperId];
     const title = paper?.title ?? TAB_NAMES[this.tab];
     button(actions, this.tab === 'wrong' ? '重刷错题' : '开始练习', () => this.start({ ...scope, title, mode: 'practice' }, ids), true).disabled = !ids.length;
-    if (this.tab === 'paper') button(actions, '整卷模考', () => this.configureExam(paper));
+    if (this.tab === 'paper') {
+      button(actions, '整卷模考', () => this.configureExam(paper));
+      button(actions, '管理题库', () => this.choosePaperToManage());
+    }
     if (this.tab !== 'paper' && ids.length) this.renderReviewList(root, data, ids);
     this.renderSessions(root, data);
+  }
+
+  choosePaperToManage() {
+    dialog(this.app, '选择要管理的题库', (root, modal) => {
+      const list = node(root, 'ul', undefined, 'shuati-list shuati-paper-list');
+      for (const paper of Object.values(this.plugin.data.papers)) {
+        const row = node(list, 'li');
+        const choice = button(row, paperLabel(paper), () => {
+          modal.close();
+          const current = this.plugin.data.papers[paper.id];
+          if (current) this.managePaper(current);
+          else new Notice('题库已删除');
+        });
+        choice.title = paper.path;
+      }
+    });
+  }
+
+  managePaper(paper) {
+    dialog(this.app, '管理题库', (root, modal) => {
+      node(root, 'p', paper.title);
+      const source = this.app.vault.getAbstractFileByPath(paper.path);
+      node(root, 'p', `${source ? '源笔记' : '未找到源笔记'} · ${paper.path}`, 'shuati-muted shuati-path');
+      const actions = node(root, 'div', undefined, 'shuati-actions');
+      const openAction = action => () => { modal.close(); action(); };
+      button(actions, '返回题库选择', openAction(() => this.choosePaperToManage()));
+      button(actions, '重命名', openAction(() => this.renamePaper(paper)));
+      button(actions, '重定位题库', openAction(() => {
+        new PaperNotePicker(this.app, file => this.run(() => this.previewRelocation(paper, file), false)).open();
+      }));
+      button(actions, '删除题库', openAction(() => this.confirmDeletePaper(paper))).classList.add('mod-warning');
+    });
+  }
+
+  renamePaper(paper) {
+    dialog(this.app, '重命名题库', (root, modal) => {
+      const label = node(root, 'label', undefined, 'shuati-field');
+      node(label, 'span', '题库名称');
+      const input = node(label, 'input', undefined, 'shuati-paper-name');
+      input.type = 'text';
+      input.value = paper.title;
+      const actions = node(root, 'div', undefined, 'shuati-actions');
+      button(actions, '取消', () => modal.close());
+      const save = button(actions, '保存名称', () => {
+        save.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update(data => study.renamePaper(data, paper.id, input.value));
+            modal.close();
+            new Notice('题库已重命名');
+          } finally { save.disabled = false; }
+        });
+      }, true);
+      input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) save.click(); });
+    });
+  }
+
+  confirmDeletePaper(paper) {
+    dialog(this.app, '删除题库', (root, modal) => {
+      node(root, 'p', `${paper.title} · ${paper.questionIds.length} 题`);
+      node(root, 'p', '将删除刷题插件中这套题库的题目、进度、错题、收藏和相关作答。跨题库作答中，仅移除这套题库的题目。源笔记和附件仍保存在库中。');
+      const actions = node(root, 'div', undefined, 'shuati-actions');
+      button(actions, '取消', () => modal.close());
+      const remove = button(actions, '确认删除', () => {
+        remove.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update(data => study.deletePaper(data, paper.id));
+            modal.close();
+            new Notice('题库已删除');
+          } finally { remove.disabled = false; }
+        });
+      });
+      remove.classList.add('mod-warning');
+    });
+  }
+
+  async previewRelocation(paper, file) {
+    const path = file.path;
+    const parsed = await this.plugin.readPaper(file, path);
+    dialog(this.app, parsed.issues.length ? '检查新位置的试卷' : '确认重定位题库', (root, modal) => {
+      node(root, 'p', `原位置 · ${paper.path}`, 'shuati-muted shuati-path');
+      node(root, 'p', `新位置 · ${path}`, 'shuati-path');
+      if (parsed.issues.length) { renderImportIssues(root, parsed.issues); return; }
+      node(root, 'p', '请选择同一份试卷。重定位成功后，作答记录、错题和收藏会关联到新位置。');
+      const actions = node(root, 'div', undefined, 'shuati-actions');
+      button(actions, '取消', () => modal.close());
+      const save = button(actions, '确认重定位', () => {
+        save.disabled = true;
+        return this.run(async () => {
+          try {
+            await this.plugin.update(data => {
+              if (this.app.vault.getAbstractFileByPath(path) !== file) throw new Error('新位置已变化，请重新选择笔记');
+              return study.relocatePaper(data, paper.id, path, parsed);
+            });
+            modal.close();
+            new Notice('题库已重定位');
+          } finally { save.disabled = false; }
+        });
+      }, true);
+    });
   }
 
   renderReviewList(root, data, ids) {
@@ -468,17 +595,15 @@ class ShuatiPlugin extends Plugin {
     this.addCommand({ id: 'open', name: '打开刷题', callback: () => this.openView() });
     this.addCommand({ id: 'import-note', name: '导入当前笔记为试卷', callback: () => this.previewImport().catch(error => new Notice(error.message)) });
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
-      const toPath = path => path === oldPath ? file.path : path.startsWith(`${oldPath}/`) ? file.path + path.slice(oldPath.length) : path;
-      if (!Object.values(this.data.papers).some(paper => toPath(paper.path) !== paper.path)) return;
-      this.update(data => {
-        for (const paper of Object.values(data.papers)) paper.path = toPath(paper.path);
-        for (const question of Object.values(data.versions)) question.path = toPath(question.path);
-      }).then(() => this.redrawViews()).catch(error => new Notice(error.message));
+      const newPath = file.path;
+      this.update(data => study.moveVaultPath(data, oldPath, newPath), data => study.usesVaultPath(data, oldPath))
+        .then(changed => { if (changed) this.redrawViews(); }).catch(error => new Notice(error.message));
     }));
   }
 
-  update(mutation) {
+  update(mutation, shouldUpdate = () => true) {
     const write = this.writes.then(async () => {
+      if (!shouldUpdate(this.data)) return;
       const next = JSON.parse(JSON.stringify(this.data));
       const result = mutation(next);
       await this.saveData(next);
@@ -503,23 +628,24 @@ class ShuatiPlugin extends Plugin {
     return leaf.view;
   }
 
+  async readPaper(file, path) {
+    const read = note => this.app.vault.read(note);
+    return resolvePaperMedia(parsePaper(await read(file)), path, async (link, source) => {
+      const target = this.app.metadataCache.getFirstLinkpathDest(link, source);
+      if (!(target instanceof TFile)) return null;
+      return { path: target.path, extension: target.extension.toLowerCase(), content: target.extension === 'md' ? await read(target) : undefined };
+    });
+  }
+
   async previewImport() {
     const active = this.app.workspace.getActiveFile();
     const recent = active ?? this.app.vault.getAbstractFileByPath(this.app.workspace.getLastOpenFiles()[0] ?? '');
     if (!(recent instanceof TFile) || recent.extension !== 'md') throw new Error('请先打开要导入的 Markdown 笔记');
-    const read = file => this.app.vault.read(file);
-    const parsed = await resolvePaperMedia(parsePaper(await read(recent)), recent.path, async (link, source) => {
-      const file = this.app.metadataCache.getFirstLinkpathDest(link, source);
-      if (!(file instanceof TFile)) return null;
-      return { path: file.path, extension: file.extension.toLowerCase(), content: file.extension === 'md' ? await read(file) : undefined };
-    });
+    const parsed = await this.readPaper(recent, recent.path);
     dialog(this.app, parsed.issues.length ? '请修正试卷' : '导入试卷', (root, modal) => {
       node(root, 'p', recent.path, 'shuati-muted');
       if (parsed.issues.length) {
-        const list = node(root, 'ul', undefined, 'shuati-errors');
-        for (const issue of parsed.issues) {
-          node(list, 'li', `${issue.number ? `第 ${issue.number} 题 · ` : ''}第 ${issue.line} 行 · ${issue.message}`);
-        }
+        renderImportIssues(root, parsed.issues);
         return;
       }
       node(root, 'p', `${parsed.title} · ${parsed.questions.length} 题`);

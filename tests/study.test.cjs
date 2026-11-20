@@ -97,3 +97,91 @@ test('本地图片和共用材料以来源路径解析，远程、缺失与材�
   assert.equal(bad.issues.length, 3);
   assert.ok(bad.issues.every(issue => issue.number === 7 && issue.line === 2));
 });
+
+test('重命名会保留题库和题目 ID，重导不覆盖自定义名称', () => {
+  const { data, paper, question } = open();
+  state.record(data, question, ['B']);
+  assert.throws(() => state.renamePaper(data, paper.id, '   '), /名称不能为空/);
+  state.renamePaper(data, paper.id, '  我的专项训练  ');
+  const reimported = state.importPaper(data, paper.path, parse(source));
+  assert.equal(reimported.id, paper.id);
+  assert.equal(reimported.title, '我的专项训练');
+  assert.deepEqual(reimported.questionIds, [question]);
+  assert.deepEqual(data.progress[question], { attempts: 1, wrongCount: 1, isWrong: true });
+});
+
+test('删除题库清除历史版本与进度，只裁掉混合记录中的相关题目', () => {
+  const { data, paper, question } = open();
+  const a = state.importPaper(data, paper.path, parse(source.replace('题干', '新题干')));
+  const b = state.importPaper(data, '另卷.md', parse(source));
+  const c = state.importPaper(data, '第三卷.md', parse(source));
+  const revised = a.questionIds[0], keep = b.questionIds[0], next = c.questionIds[0];
+  for (const id of [question, revised, keep]) state.record(data, id, ['B']);
+  const scoped = state.startSession(data, { mode: 'exam', paperId: paper.id }, [revised]);
+  const mixed = state.startSession(data, { mode: 'practice', kind: 'wrong' }, [keep, revised, next]);
+  mixed.cursor = 1;
+  mixed.selected = { [revised]: ['B'], [keep]: ['A'] };
+  mixed.results = { [revised]: 'wrong', [keep]: 'correct' };
+  const completed = state.startSession(data, { mode: 'practice' }, [question]);
+  state.submit(data, completed.id);
+  assert.equal(state.deletePaper(data, paper.id), true);
+  assert.equal(state.deletePaper(data, paper.id), false);
+  assert.deepEqual(Object.keys(data.papers), [b.id, c.id]);
+  assert.deepEqual(Object.keys(data.versions), [keep, next]);
+  assert.deepEqual(Object.keys(data.progress), [keep]);
+  assert.deepEqual(Object.keys(data.sessions), [mixed.id]);
+  assert.deepEqual(mixed.questionIds, [keep, next]);
+  assert.equal(mixed.cursor, 1);
+  assert.deepEqual(mixed.selected, { [keep]: ['A'] });
+  assert.deepEqual(mixed.results, { [keep]: 'correct' });
+  assert.throws(() => state.startSession(data, { mode: 'exam', paperId: paper.id }, [revised]), /已删除/);
+  state.toggleBookmark(data, revised);
+  assert.equal(data.progress[revised], undefined);
+  assert.equal(data.sessions[scoped.id], undefined);
+});
+
+test('库内试卷和附件搬迁同步所有题目版本的路径及带尺寸的图片引用', () => {
+  const data = state.newData();
+  const paper = state.importPaper(data, '旧卷/练习.md', parse(source.replace('题干', '![[/旧卷/附件/图.png|300]]')));
+  const old = paper.questionIds[0];
+  const current = state.importPaper(data, paper.path, parse(source.replace('甲', '![[/旧卷/附件/图.png]]').replace('解法', '![[/旧卷备份/另图.png]]'))).questionIds[0];
+  assert.equal(state.usesVaultPath(data, '旧卷/附件/图.png'), true);
+  assert.equal(state.usesVaultPath(data, '旧'), false);
+  state.moveVaultPath(data, '旧卷', '归档/卷');
+  state.moveVaultPath(data, '归档/卷/附件/图.png', '公共图片/新图.png');
+  assert.equal(data.papers[paper.id].path, '归档/卷/练习.md');
+  assert.equal(data.versions[old].path, '归档/卷/练习.md');
+  assert.equal(data.versions[old].stem, '![[/公共图片/新图.png|300]]');
+  assert.equal(data.versions[current].options[0].text, '![[/公共图片/新图.png]]');
+  assert.equal(state.usesVaultPath(data, '旧卷/附件/图.png'), false);
+});
+
+test('手动选择迁移后的笔记会保留进度和历史，拒绝冲突、内容与引用映射不一致', () => {
+  const data = state.newData();
+  const withAsset = folder => parse(source.replace('题干', `题干 ![[/${folder}/图.png]]`).replace('甲', `![[/${folder}/图.png]]`));
+  const paper = state.importPaper(data, '旧/练习.md', withAsset('旧'));
+  const old = paper.questionIds[0];
+  const current = state.importPaper(data, paper.path, { ...withAsset('旧'), questions: withAsset('旧').questions.map(q => ({ ...q, stem: q.stem.replace('题干', '新题干') })) });
+  const question = current.questionIds[0];
+  state.record(data, question, ['B']);
+  const session = state.startSession(data, { mode: 'practice', paperId: paper.id }, [old]);
+  state.renamePaper(data, paper.id, '专项');
+  const occupied = state.importPaper(data, '占用.md', parse(source));
+  const same = withAsset('迁移/附件');
+  same.questions[0].stem = same.questions[0].stem.replace('题干', '新题干');
+  const snapshot = JSON.stringify(data);
+  assert.throws(() => state.relocatePaper(data, paper.id, occupied.path, same), /已导入/);
+  assert.throws(() => state.relocatePaper(data, paper.id, '迁移/新卷.md', withAsset('迁移/附件')), /不一致/);
+  const conflicting = JSON.parse(JSON.stringify(same));
+  conflicting.questions[0].options[0].text = '![[/其他目录/图.png]]';
+  assert.throws(() => state.relocatePaper(data, paper.id, '迁移/新卷.md', conflicting), /图片引用/);
+  assert.equal(JSON.stringify(data), snapshot);
+  const moved = state.relocatePaper(data, paper.id, '迁移/新卷.md', same);
+  assert.equal(moved.title, '专项');
+  assert.equal(moved.path, '迁移/新卷.md');
+  assert.deepEqual(moved.questionIds, [question]);
+  assert.match(data.versions[old].stem, /\/迁移\/附件\/图\.png/);
+  assert.equal(data.versions[old].path, moved.path);
+  assert.deepEqual(data.sessions[session.id].questionIds, [old]);
+  assert.equal(data.progress[question].wrongCount, 1);
+});

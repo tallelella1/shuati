@@ -17,6 +17,8 @@
 .shuati-field select { max-width: min(18rem, 58vw); }
 .shuati-modal .shuati-field { margin-block-end: var(--size-4-4); }
 .shuati-modal .shuati-field input { width: 6rem; }
+.shuati-modal .shuati-field .shuati-paper-name { width: min(24rem, 55vw); }
+.shuati-path { overflow-wrap: anywhere; }
 .shuati-muted { color: var(--text-muted); }
 .shuati-timer { font-variant-numeric: tabular-nums; }
 
@@ -66,3 +68,5 @@
 .shuati-list { padding-inline-start: 0; list-style: none; }
 .shuati-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-4-2); margin-block: var(--size-4-2); }
 .shuati-list button { max-width: 100%; height: auto; white-space: normal; text-align: start; }
+.shuati-paper-list { max-block-size: 55vh; overflow-y: auto; }
+.shuati-paper-list button { width: 100%; overflow-wrap: anywhere; }
