@@ -433,6 +433,10 @@ function dialog(app, title, fill) {
   modal.open();
   return modal;
 }
+var paperTitleOrder = new Intl.Collator("zh-Hans-CN-u-co-pinyin", { sensitivity: "base", numeric: true });
+function sortedPapers(papers) {
+  return Object.values(papers).sort((a, b) => paperTitleOrder.compare(a.title, b.title));
+}
 function paperLabel(paper) {
   return `${paper.title}\uFF08${paper.questionIds.length} \u9898\uFF09`;
 }
@@ -517,10 +521,11 @@ var ShuatiView = class extends ItemView {
   renderHome(root) {
     const data = this.plugin.data;
     const header = node(root, "header", void 0, "shuati-top");
-    node(header, "h1", "\u5237\u9898");
+    const heading = node(header, "h1", "\u5237\u9898");
+    heading.id = `shuati-heading-${this.leaf.id}`;
     button(header, "\u5BFC\u5165\u5F53\u524D\u7B14\u8BB0", () => this.run(() => this.plugin.previewImport()), true);
     const tabs = node(root, "nav", void 0, "shuati-tabs");
-    tabs.setAttribute("aria-label", "\u5237\u9898\u5206\u7C7B");
+    tabs.setAttribute("aria-labelledby", heading.id);
     for (const [name, label] of Object.entries(TAB_NAMES)) {
       const tab = button(tabs, label, () => {
         this.tab = name;
@@ -530,7 +535,7 @@ var ShuatiView = class extends ItemView {
       });
       tab.setAttribute("aria-pressed", String(this.tab === name));
     }
-    const papers = Object.values(data.papers);
+    const papers = sortedPapers(data.papers);
     if (!papers.length) {
       node(root, "p", "\u6253\u5F00\u9898\u5E93\u7B14\u8BB0\uFF0C\u5728\u547D\u4EE4\u9762\u677F\u8FD0\u884C\u300C\u5BFC\u5165\u5F53\u524D\u7B14\u8BB0\u4E3A\u8BD5\u5377\u300D\u3002", "shuati-empty");
       return;
@@ -581,7 +586,7 @@ var ShuatiView = class extends ItemView {
   choosePaperToManage() {
     dialog(this.app, "\u9009\u62E9\u8981\u7BA1\u7406\u7684\u9898\u5E93", (root, modal) => {
       const list = node(root, "ul", void 0, "shuati-list shuati-paper-list");
-      for (const paper of Object.values(this.plugin.data.papers)) {
+      for (const paper of sortedPapers(this.plugin.data.papers)) {
         const row = node(list, "li");
         const choice = button(row, paperLabel(paper), () => {
           modal.close();

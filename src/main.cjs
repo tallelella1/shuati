@@ -45,6 +45,12 @@ function dialog(app, title, fill) {
   return modal;
 }
 
+const paperTitleOrder = new Intl.Collator('zh-Hans-CN-u-co-pinyin', { sensitivity: 'base', numeric: true });
+
+function sortedPapers(papers) {
+  return Object.values(papers).sort((a, b) => paperTitleOrder.compare(a.title, b.title));
+}
+
 function paperLabel(paper) {
   return `${paper.title}（${paper.questionIds.length} 题）`;
 }
@@ -128,10 +134,11 @@ class ShuatiView extends ItemView {
   renderHome(root) {
     const data = this.plugin.data;
     const header = node(root, 'header', undefined, 'shuati-top');
-    node(header, 'h1', '刷题');
+    const heading = node(header, 'h1', '刷题');
+    heading.id = `shuati-heading-${this.leaf.id}`;
     button(header, '导入当前笔记', () => this.run(() => this.plugin.previewImport()), true);
     const tabs = node(root, 'nav', undefined, 'shuati-tabs');
-    tabs.setAttribute('aria-label', '刷题分类');
+    tabs.setAttribute('aria-labelledby', heading.id);
     for (const [name, label] of Object.entries(TAB_NAMES)) {
       const tab = button(tabs, label, () => {
         this.tab = name;
@@ -141,7 +148,7 @@ class ShuatiView extends ItemView {
       });
       tab.setAttribute('aria-pressed', String(this.tab === name));
     }
-    const papers = Object.values(data.papers);
+    const papers = sortedPapers(data.papers);
     if (!papers.length) {
       node(root, 'p', '打开题库笔记，在命令面板运行「导入当前笔记为试卷」。', 'shuati-empty');
       return;
@@ -187,7 +194,7 @@ class ShuatiView extends ItemView {
   choosePaperToManage() {
     dialog(this.app, '选择要管理的题库', (root, modal) => {
       const list = node(root, 'ul', undefined, 'shuati-list shuati-paper-list');
-      for (const paper of Object.values(this.plugin.data.papers)) {
+      for (const paper of sortedPapers(this.plugin.data.papers)) {
         const row = node(list, 'li');
         const choice = button(row, paperLabel(paper), () => {
           modal.close();
