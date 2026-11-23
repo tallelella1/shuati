@@ -137,6 +137,7 @@ class ShuatiView extends ItemView {
     this.paperId = '';
     this.module = '';
     this.unanswered = false;
+    this.shuffle = false;
     this.sessionId = '';
     this.showCard = false;
     this.rawTimer = null;
@@ -261,13 +262,19 @@ class ShuatiView extends ItemView {
       input.addEventListener('change', () => { this.unanswered = input.checked; this.render(); });
       node(wrapper, 'span', '只练未答题');
     }
+    const shuffleLabel = node(filters, 'label', undefined, 'shuati-check');
+    const shuffleInput = node(shuffleLabel, 'input');
+    shuffleInput.type = 'checkbox';
+    shuffleInput.checked = this.shuffle;
+    shuffleInput.addEventListener('change', () => { this.shuffle = shuffleInput.checked; });
+    node(shuffleLabel, 'span', '乱序');
     const scope = { ...baseScope, module: this.module, unanswered: this.unanswered };
     const ids = study.pickQuestions(data, scope);
     node(root, 'p', `可练 ${ids.length} 题`, 'shuati-muted');
     const actions = node(root, 'div', undefined, 'shuati-actions');
     const paper = data.papers[this.paperId];
     const title = paper?.title ?? TAB_NAMES[this.tab];
-    button(actions, this.tab === 'wrong' ? '重刷错题' : '开始练习', () => this.start({ ...scope, title, mode: 'practice' }, ids), true).disabled = !ids.length;
+    button(actions, this.tab === 'wrong' ? '重刷错题' : '开始练习', () => this.start({ ...scope, title, mode: 'practice', shuffle: this.shuffle }, ids), true).disabled = !ids.length;
     if (this.tab === 'paper') {
       button(actions, '整卷模考', () => this.configureExam(paper));
       button(actions, '管理题库', () => this.choosePaperToManage());
@@ -451,7 +458,7 @@ class ShuatiView extends ItemView {
           return;
         }
         modal.close();
-        this.start({ mode: 'exam', kind: 'paper', paperId: paper.id, title: paper.title }, paper.questionIds, minutes);
+        this.start({ mode: 'exam', kind: 'paper', paperId: paper.id, title: paper.title, shuffle: this.shuffle }, paper.questionIds, minutes);
       }, true);
     });
   }

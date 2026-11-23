@@ -327,7 +327,14 @@ var require_study = __commonJS({
       if (scope.paperId) requirePaper(data, scope.paperId);
       if (questionIds.some((id2) => !data.versions[id2])) throw new Error("\u90E8\u5206\u9898\u76EE\u5DF2\u5220\u9664\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9");
       const id = allocate(data, "session");
-      const session = { ...scope, id, questionIds: [...questionIds], cursor: 0, selected: {}, results: {}, started: now };
+      const order = [...questionIds];
+      if (scope.shuffle) {
+        for (let index = order.length - 1; index > 0; index--) {
+          const randomIndex = Math.floor(Math.random() * (index + 1));
+          [order[index], order[randomIndex]] = [order[randomIndex], order[index]];
+        }
+      }
+      const session = { ...scope, id, questionIds: order, cursor: 0, selected: {}, results: {}, started: now };
       if (minutes) session.deadline = now + minutes * 6e4;
       data.sessions[id] = session;
       return session;
@@ -584,6 +591,7 @@ var ShuatiView = class _ShuatiView extends ItemView {
     this.paperId = "";
     this.module = "";
     this.unanswered = false;
+    this.shuffle = false;
     this.sessionId = "";
     this.showCard = false;
     this.rawTimer = null;
@@ -710,13 +718,21 @@ var ShuatiView = class _ShuatiView extends ItemView {
       });
       node(wrapper, "span", "\u53EA\u7EC3\u672A\u7B54\u9898");
     }
+    const shuffleLabel = node(filters, "label", void 0, "shuati-check");
+    const shuffleInput = node(shuffleLabel, "input");
+    shuffleInput.type = "checkbox";
+    shuffleInput.checked = this.shuffle;
+    shuffleInput.addEventListener("change", () => {
+      this.shuffle = shuffleInput.checked;
+    });
+    node(shuffleLabel, "span", "\u4E71\u5E8F");
     const scope = { ...baseScope, module: this.module, unanswered: this.unanswered };
     const ids = study.pickQuestions(data, scope);
     node(root, "p", `\u53EF\u7EC3 ${ids.length} \u9898`, "shuati-muted");
     const actions = node(root, "div", void 0, "shuati-actions");
     const paper = data.papers[this.paperId];
     const title = paper?.title ?? TAB_NAMES[this.tab];
-    button(actions, this.tab === "wrong" ? "\u91CD\u5237\u9519\u9898" : "\u5F00\u59CB\u7EC3\u4E60", () => this.start({ ...scope, title, mode: "practice" }, ids), true).disabled = !ids.length;
+    button(actions, this.tab === "wrong" ? "\u91CD\u5237\u9519\u9898" : "\u5F00\u59CB\u7EC3\u4E60", () => this.start({ ...scope, title, mode: "practice", shuffle: this.shuffle }, ids), true).disabled = !ids.length;
     if (this.tab === "paper") {
       button(actions, "\u6574\u5377\u6A21\u8003", () => this.configureExam(paper));
       button(actions, "\u7BA1\u7406\u9898\u5E93", () => this.choosePaperToManage());
@@ -904,7 +920,7 @@ var ShuatiView = class _ShuatiView extends ItemView {
           return;
         }
         modal.close();
-        this.start({ mode: "exam", kind: "paper", paperId: paper.id, title: paper.title }, paper.questionIds, minutes);
+        this.start({ mode: "exam", kind: "paper", paperId: paper.id, title: paper.title, shuffle: this.shuffle }, paper.questionIds, minutes);
       }, true);
     });
   }

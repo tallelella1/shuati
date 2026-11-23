@@ -151,7 +151,14 @@ function startSession(data, scope, questionIds, minutes, now = Date.now()) {
   if (scope.paperId) requirePaper(data, scope.paperId);
   if (questionIds.some(id => !data.versions[id])) throw new Error('部分题目已删除，请重新选择');
   const id = allocate(data, 'session');
-  const session = { ...scope, id, questionIds: [...questionIds], cursor: 0, selected: {}, results: {}, started: now };
+  const order = [...questionIds];
+  if (scope.shuffle) {
+    for (let index = order.length - 1; index > 0; index--) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [order[index], order[randomIndex]] = [order[randomIndex], order[index]];
+    }
+  }
+  const session = { ...scope, id, questionIds: order, cursor: 0, selected: {}, results: {}, started: now };
   if (minutes) session.deadline = now + minutes * 60000;
   data.sessions[id] = session;
   return session;

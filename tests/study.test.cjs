@@ -24,6 +24,39 @@ test('同卷重导入、修改解析保留记录，改答案产生独立版本',
   assert.equal(data.versions[question].answers[0], 'A');
 });
 
+test('默认按原顺序，勾选乱序后每次重新排列，续做保留题序和答案', t => {
+  const { data } = open();
+  const questionMarkdown = source.slice(source.indexOf('##'));
+  const markdown = source + '\n' + [8, 9].map(number => questionMarkdown.replace('## 7', `## ${number}`)).join('\n');
+  const paper = state.importPaper(data, '卷.md', parse(markdown));
+  const original = [...paper.questionIds];
+  const scope = { mode: 'practice', kind: 'paper', paperId: paper.id };
+  const random = t.mock.method(Math, 'random', () => 0);
+  const defaultPractice = state.startSession(data, scope, paper.questionIds);
+  const orderedExam = state.startSession(data, { ...scope, mode: 'exam', shuffle: false }, paper.questionIds);
+  assert.deepEqual(defaultPractice.questionIds, original);
+  assert.deepEqual(orderedExam.questionIds, original);
+  assert.equal(random.mock.callCount(), 0);
+  const shuffledScope = { ...scope, shuffle: true };
+  const first = state.startSession(data, shuffledScope, paper.questionIds);
+  const firstOrder = [...first.questionIds];
+  random.mock.mockImplementation(() => 0.5);
+  const second = state.startSession(data, shuffledScope, paper.questionIds);
+  assert.notDeepEqual(first.questionIds, original);
+  assert.notDeepEqual(first.questionIds, second.questionIds);
+  assert.deepEqual(paper.questionIds, original);
+  for (const session of [first, second]) {
+    assert.deepEqual([...session.questionIds].sort(), [...original].sort());
+  }
+  first.cursor = 1;
+  const current = first.questionIds[first.cursor];
+  state.setSelection(data, first.id, current, ['A']);
+  const restored = JSON.parse(JSON.stringify(data)).sessions[first.id];
+  assert.deepEqual(restored.questionIds, firstOrder);
+  assert.equal(restored.questionIds[restored.cursor], current);
+  assert.deepEqual(restored.selected[current], ['A']);
+});
+
 test('离开并恢复模考，交卷评分一次，未答题与错题分离，重刷答对后保留累计错次', () => {
   let { data, paper, question } = open();
   const full = state.importPaper(data, '卷.md', parse(source + '\n' + source.slice(source.indexOf('##')).replace('## 7', '## 8')));
@@ -110,7 +143,8 @@ test('重命名会保留题库和题目 ID，重导不覆盖自定义名称', ()
   assert.deepEqual(data.progress[question], { attempts: 1, wrongCount: 1, isWrong: true });
 });
 
-test('删除题库清除历史版本与进度，只裁掉混合记录中的相关题目', () => {
+test('删除题库清除历史版本与进度，只裁掉混合记录中的相关题目', t => {
+  t.mock.method(Math, 'random', () => 0.99);
   const { data, paper, question } = open();
   const a = state.importPaper(data, paper.path, parse(source.replace('题干', '新题干')));
   const b = state.importPaper(data, '另卷.md', parse(source));
@@ -118,7 +152,7 @@ test('删除题库清除历史版本与进度，只裁掉混合记录中的相�
   const revised = a.questionIds[0], keep = b.questionIds[0], next = c.questionIds[0];
   for (const id of [question, revised, keep]) state.record(data, id, ['B']);
   const scoped = state.startSession(data, { mode: 'exam', paperId: paper.id }, [revised]);
-  const mixed = state.startSession(data, { mode: 'practice', kind: 'wrong' }, [keep, revised, next]);
+  const mixed = state.startSession(data, { mode: 'practice', kind: 'wrong', shuffle: true }, [keep, revised, next]);
   mixed.cursor = 1;
   mixed.selected = { [revised]: ['B'], [keep]: ['A'] };
   mixed.results = { [revised]: 'wrong', [keep]: 'correct' };
