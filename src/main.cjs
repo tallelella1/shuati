@@ -5,6 +5,7 @@ const study = require('./study.cjs');
 const { readHotkeys, recordKey, matchHotkey, actionForOption, keyLabel } = require('./hotkeys.cjs');
 
 const VIEW = 'shuati-study';
+const LIST_PREVIEW_ROWS = 7;
 const TAB_NAMES = { paper: '试卷', wrong: '错题', bookmarked: '收藏' };
 const TYPE_NAMES = { single: '单选', multiple: '多选', judge: '判断' };
 const HOTKEY_NAMES = {
@@ -27,6 +28,18 @@ function button(parent, text, handler, primary = false) {
   element.type = 'button';
   element.addEventListener('click', handler);
   return element;
+}
+
+function renderList(parent, items, renderRow, limit = LIST_PREVIEW_ROWS) {
+  let list = node(parent, 'ul', undefined, 'shuati-list');
+  for (const [index, item] of items.entries()) {
+    if (index === limit) {
+      const more = node(parent, 'details');
+      node(more, 'summary', `其余 ${items.length - limit} 条`);
+      list = node(more, 'ul', undefined, 'shuati-list');
+    }
+    renderRow(node(list, 'li'), item);
+  }
 }
 
 function select(parent, label, choices, value) {
@@ -385,15 +398,13 @@ class ShuatiView extends ItemView {
   }
 
   renderReviewList(root, data, ids) {
-    const list = node(root, 'ul', undefined, 'shuati-list');
-    for (const id of ids) {
+    renderList(root, ids, (row, id) => {
       const q = data.versions[id];
       const progress = data.progress[id];
       const text = `${data.papers[q.paperId].title} · 第 ${q.number} 题 · ${q.module}`;
-      const row = node(list, 'li');
       button(row, text, () => this.start({ mode: 'practice', kind: this.tab, paperId: q.paperId, title: text }, [id]));
       if (progress?.wrongCount) node(row, 'span', `累计答错 ${progress.wrongCount} 次`, 'shuati-muted');
-    }
+    });
   }
 
   renderSessions(root, data) {
@@ -407,10 +418,8 @@ class ShuatiView extends ItemView {
   sessionList(root, title, sessions, collapsed = false) {
     const section = node(root, collapsed ? 'details' : 'section', undefined, 'shuati-section');
     node(section, collapsed ? 'summary' : 'h2', title);
-    const list = node(section, 'ul', undefined, 'shuati-list');
-    for (const session of sessions) {
+    renderList(section, sessions, (row, session) => {
       const label = session.mode === 'exam' ? '模考' : '练习';
-      const row = node(list, 'li');
       const date = new Date(session.started).toLocaleString();
       const description = `${session.title} · ${label} · ${date}`;
       button(row, description, () => this.resume(session.id));
@@ -418,7 +427,7 @@ class ShuatiView extends ItemView {
         const remove = button(row, '删除', () => this.confirmDeleteSession(session, description));
         remove.setAttribute('aria-label', `删除 ${description}`);
       }
-    }
+    }, collapsed ? sessions.length : LIST_PREVIEW_ROWS);
   }
 
   confirmDeleteSession(session, description) {

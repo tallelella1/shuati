@@ -452,6 +452,7 @@ var { resolvePaperMedia } = require_media();
 var study = require_study();
 var { readHotkeys, recordKey, matchHotkey, actionForOption, keyLabel } = require_hotkeys();
 var VIEW = "shuati-study";
+var LIST_PREVIEW_ROWS = 7;
 var TAB_NAMES = { paper: "\u8BD5\u5377", wrong: "\u9519\u9898", bookmarked: "\u6536\u85CF" };
 var TYPE_NAMES = { single: "\u5355\u9009", multiple: "\u591A\u9009", judge: "\u5224\u65AD" };
 var HOTKEY_NAMES = {
@@ -480,6 +481,17 @@ function button(parent, text, handler, primary = false) {
   element.type = "button";
   element.addEventListener("click", handler);
   return element;
+}
+function renderList(parent, items, renderRow, limit = LIST_PREVIEW_ROWS) {
+  let list = node(parent, "ul", void 0, "shuati-list");
+  for (const [index, item] of items.entries()) {
+    if (index === limit) {
+      const more = node(parent, "details");
+      node(more, "summary", `\u5176\u4F59 ${items.length - limit} \u6761`);
+      list = node(more, "ul", void 0, "shuati-list");
+    }
+    renderRow(node(list, "li"), item);
+  }
 }
 function select(parent, label, choices, value) {
   const wrapper = node(parent, "label", void 0, "shuati-field");
@@ -851,15 +863,13 @@ var ShuatiView = class _ShuatiView extends ItemView {
     });
   }
   renderReviewList(root, data, ids) {
-    const list = node(root, "ul", void 0, "shuati-list");
-    for (const id of ids) {
+    renderList(root, ids, (row, id) => {
       const q = data.versions[id];
       const progress = data.progress[id];
       const text = `${data.papers[q.paperId].title} \xB7 \u7B2C ${q.number} \u9898 \xB7 ${q.module}`;
-      const row = node(list, "li");
       button(row, text, () => this.start({ mode: "practice", kind: this.tab, paperId: q.paperId, title: text }, [id]));
       if (progress?.wrongCount) node(row, "span", `\u7D2F\u8BA1\u7B54\u9519 ${progress.wrongCount} \u6B21`, "shuati-muted");
-    }
+    });
   }
   renderSessions(root, data) {
     const sessions = Object.values(data.sessions).reverse();
@@ -871,10 +881,8 @@ var ShuatiView = class _ShuatiView extends ItemView {
   sessionList(root, title, sessions, collapsed = false) {
     const section = node(root, collapsed ? "details" : "section", void 0, "shuati-section");
     node(section, collapsed ? "summary" : "h2", title);
-    const list = node(section, "ul", void 0, "shuati-list");
-    for (const session of sessions) {
+    renderList(section, sessions, (row, session) => {
       const label = session.mode === "exam" ? "\u6A21\u8003" : "\u7EC3\u4E60";
-      const row = node(list, "li");
       const date = new Date(session.started).toLocaleString();
       const description = `${session.title} \xB7 ${label} \xB7 ${date}`;
       button(row, description, () => this.resume(session.id));
@@ -882,7 +890,7 @@ var ShuatiView = class _ShuatiView extends ItemView {
         const remove = button(row, "\u5220\u9664", () => this.confirmDeleteSession(session, description));
         remove.setAttribute("aria-label", `\u5220\u9664 ${description}`);
       }
-    }
+    }, collapsed ? sessions.length : LIST_PREVIEW_ROWS);
   }
   confirmDeleteSession(session, description) {
     dialog(this.app, "\u5220\u9664\u7EE7\u7EED\u4F5C\u7B54\u8BB0\u5F55", (root, modal) => {
